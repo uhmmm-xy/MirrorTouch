@@ -2,13 +2,14 @@ import math
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPainterPath
 from src.ui.tools.base_widget import BaseWidget
+from src.ui.abilities import Selectable, Draggable, Activable
 from src.utils.widgets_data import WidgetsData
 from src.utils.enums import IconType
 from src.ui.tools.registry import register_component
 
 
 @register_component(IconType.RADIAL)
-class RadialWidget(BaseWidget):
+class RadialWidget(BaseWidget, Selectable, Draggable, Activable):
     """径向转盘：按住绑定键激活，鼠标角度选择 8 方向扇形"""
 
     def __init__(self, data: WidgetsData = None, parent=None, handler=None):

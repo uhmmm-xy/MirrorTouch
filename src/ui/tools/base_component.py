@@ -4,7 +4,11 @@ from src.utils.enums import TipStatus, ComponentEvent
 from PyQt5.QtWidgets import QWidget
 
 class BaseComponent:
-    """组件父类，通过 EventHandler 回调分发事件"""
+    """组件父类 —— 纯 View 层
+
+    职责：几何 + 层级 + 绘制 + 事件回调分发。
+    交互逻辑（选中/拖拽/缩放）交由 Handler 通过 Ability 接口处理。
+    """
 
     def __init__(self, x: int, y: int, size: int = 80,
                  name: str = "", icon_type=None, parent=None,
@@ -19,8 +23,6 @@ class BaseComponent:
         self.handler = handler
         self._children: list["BaseComponent"] = []
 
-        self._dragging = False
-        self._drag_offset = QPoint()
         self._hovered = False
 
     # ── 事件注册 ──
@@ -60,67 +62,6 @@ class BaseComponent:
         child.parent = self
         self._children.append(child)
 
-
-    # ── 鼠标事件入口 ──
-
-    def handle_mouse_press(self, px: int, py: int, button):
-        if button == Qt.LeftButton and self.contains(px, py):
-            self._dragging = True
-            self._drag_offset = QPoint(self.x - px, self.y - py)
-            self.tip_status = TipStatus.DRAG
-            self._dispatch(ComponentEvent.DRAG_START, px, py)
-            return True
-
-        if button == Qt.RightButton and self.contains(px, py):
-            self.tip_status = TipStatus.RIGHT_CLICK
-            self._dispatch(ComponentEvent.RIGHT_CLICK, px, py)
-            return True
-
-        self.tip_status = TipStatus.UNSELECTED
-        return False
-
-    def handle_mouse_move(self, px: int, py: int):
-        if self._dragging:
-            new_x = px + self._drag_offset.x()
-            new_y = py + self._drag_offset.y()
-            self.move_to(new_x, new_y)
-            self._dispatch(ComponentEvent.DRAG_MOVE, px, py)
-
-        elif self.tip_status == TipStatus.RIGHT_CLICK:
-            dx = px - self.x
-            dy = py - self.y
-            self.size = max(20, int((abs(dx) + abs(dy)) / 2))
-            self._dispatch(ComponentEvent.RIGHT_DRAG, px, py)
-            self._request_update()
-
-        else:
-            was_hovered = self._hovered
-            self._hovered = self.contains(px, py)
-            if self._hovered and not was_hovered:
-                self._dispatch(ComponentEvent.HOVER_ENTER, px, py)
-            elif not self._hovered and was_hovered:
-                self._dispatch(ComponentEvent.HOVER_LEAVE, px, py)
-
-    def handle_mouse_release(self, px: int, py: int, button):
-        if button == Qt.LeftButton and self._dragging:
-            self._dragging = False
-            self.tip_status = TipStatus.UNSELECTED
-            self._dispatch(ComponentEvent.DRAG_END, px, py)
-            self._request_update()
-            return True
-
-        if button == Qt.RightButton and self.tip_status == TipStatus.RIGHT_CLICK:
-            self.tip_status = TipStatus.UNSELECTED
-            self._dispatch(ComponentEvent.RIGHT_RELEASE, px, py)
-            self._request_update()
-            return True
-
-        return False
-
-    def handle_click(self):
-        self.tip_status = TipStatus.CLICK
-        self._dispatch(ComponentEvent.CLICK)
-
     # ── 绘制 ──
 
     def draw(self, painter: QPainter):
@@ -155,6 +96,8 @@ class BaseComponent:
 
         painter.restore()
 
+    # ── 内部工具 ──
+
     def _dispatch(self, event: ComponentEvent, *args):
         if self.handler:
             self.handler.dispatch(self, event, *args)
@@ -167,14 +110,12 @@ class BaseComponent:
                 return
             node = getattr(node, 'parent', None)
 
-    @property
-    def is_dragging(self):
-        return self._dragging
+    # ── 属性 ──
 
     @property
     def is_hovered(self):
         return self._hovered
-    
+
     @property
     def children(self):
         return self._children

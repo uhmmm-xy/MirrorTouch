@@ -3,11 +3,13 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QFra
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QColor, QFont, QMouseEvent, QPixmap, QKeyEvent, QKeySequence
 from qfluentwidgets import PushButton
+from src.ui.touch_canvas import TouchCanvas
 from src.ui.tools.event_handler import EventHandler
 from src.ui.tools.property_panel import PropertyPanel
 from src.utils.enums import IconType, WidgetType, ComponentEvent
 from src.ui.tools.registry import create_component
 from src.ui.tools.screen_component import ScreenComponent
+from src.core.handlers import SelectHandler, DragHandler, ResizeHandler, AddWidgetHandler, DeleteHandler, PropertyEditHandler, TestInputHandler, UndoHandler
 import src.ui.tools.joystick_component
 import src.ui.tools.button_widget
 import src.ui.tools.eyes_widget
@@ -73,6 +75,26 @@ class TouchPage(QWidget):
             x=0, y=0, size=400, name="投屏画面",
             parent=self, handler=self._handler
         )
+
+        # ── 创建并注册 Handler ──
+        self._select_handler = SelectHandler()
+        self._drag_handler = DragHandler()
+        self._resize_handler = ResizeHandler()
+        self._add_handler = AddWidgetHandler()
+        self._delete_handler = DeleteHandler(drag_handler=self._drag_handler)
+        self._undo_handler = UndoHandler()
+        self._test_input_handler = TestInputHandler()
+
+        self._screen.register_handler(self._add_handler)
+        self._screen.register_handler(self._undo_handler)
+        self._screen.register_handler(self._delete_handler)
+        self._screen.register_handler(self._select_handler)
+        self._screen.register_handler(self._drag_handler)
+        self._screen.register_handler(self._resize_handler)
+
+        # 注入 TestInputHandler 到 Screen（键盘事件委托）
+        self._screen.set_test_input_handler(self._test_input_handler)
+
         self._background_pixmap: QPixmap | None = None
         self._test_mode = False
 
@@ -88,8 +110,12 @@ class TouchPage(QWidget):
     def _toggle_test_mode(self):
         self._test_mode = not self._test_mode
         self._screen.set_test_mode(self._test_mode)
+        # 测试模式隐藏编辑 UI（Canvas 内按钮 + 删除区域）
+        self._delete_handler.enabled = not self._test_mode
+        self._add_handler.enabled = not self._test_mode
+        self._undo_handler.enabled = not self._test_mode
         if self._test_mode:
-            self.setFocus()  # 确保接收键盘事件
+            self.setFocus()
         self.canvas.update()
 
     def _setup_ui(self):
@@ -144,8 +170,16 @@ class TouchPage(QWidget):
         main_layout.addWidget(line_v)
 
         self._property_panel = PropertyPanel(parent=self, handler=self._handler)
-        self._property_panel.on(ComponentEvent.CHANGE, self._on_property_changed)
+        self._prop_edit_handler = PropertyEditHandler(
+            self._property_panel,
+            on_changed=self._on_property_changed
+        )
         main_layout.addWidget(self._property_panel.widget())
+
+        # 属性面板创建完成后，绑定 SelectHandler 回调
+        self._select_handler.set_callback(
+            lambda w: self._property_panel.fill_from_data(w.data if w else None)
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -164,11 +198,19 @@ class TouchPage(QWidget):
         ch = self.canvas.height()
         if cw <= 0 or ch <= 0:
             return
+        # 三区域布局：Header(48) + Content + Footer(72)
+        header_h = TouchCanvas.HEADER_H
+        footer_h = TouchCanvas.FOOTER_H
+        content_h = ch - header_h - footer_h
+        if content_h <= 0:
+            return
         margin = 20
         aw = cw - margin * 2
-        ah = ch - margin * 2
+        ah = content_h - margin * 2
         if self._background_pixmap and not self._background_pixmap.isNull():
             ratio = self._background_pixmap.width() / self._background_pixmap.height()
+        elif self._screen.keymap_data:
+            ratio = self._screen.screen_width / max(self._screen.screen_height, 1)
         else:
             ratio = ScreenComponent.DEFAULT_RATIO
         if aw / ah > ratio:
@@ -179,7 +221,7 @@ class TouchPage(QWidget):
             screen_h = int(aw / ratio)
         self._screen.size = screen_w
         self._screen.x = cw // 2
-        self._screen.y = ch // 2
+        self._screen.y = header_h + content_h // 2
         if self._background_pixmap and not self._background_pixmap.isNull():
             self._screen.screen_width = self._background_pixmap.width()
             self._screen.screen_height = self._background_pixmap.height()
@@ -210,6 +252,8 @@ class TouchPage(QWidget):
                 data = self._screen.export_keymap()
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
+                self._undo_handler.clear()
+                self.canvas.update()
                 print(f"[TouchPage] 已导出: {path}")
             except Exception as e:
                 print(f"[TouchPage] 导出失败: {e}")
@@ -236,11 +280,17 @@ class TouchPage(QWidget):
     def _on_scrcpy(self):
         print("[TouchPage] Scrcpy 投屏功能需要在设置页面配置参数后启用")
 
-    def _on_property_changed(self, _component):
+    @property
+    def undo_handler(self):
+        return self._undo_handler
+
+    def _on_property_changed(self, changed: dict):
+        """属性面板变更 → 应用到选中控件（由 PropertyEditHandler 回调）"""
         w = self._screen.selected_widget
         if not w or not w.data:
             return
-        changed = self._property_panel.collect_data()
+        # 撤销记录：在变更之前保存快照
+        self._undo_handler.record(self._screen)
         d = w.data
         old_type = d.widget_type
         d.comment = changed.get("comment", d.comment)
@@ -254,18 +304,34 @@ class TouchPage(QWidget):
         d.pos_x = changed.get("pos_x", d.pos_x)
         d.pos_y = changed.get("pos_y", d.pos_y)
         d.scale_size = changed.get("scale_size", d.scale_size)
+        # EYES 不绑定按键
+        if new_type == WidgetType.EYES:
+            d.key = ""
         if new_type == WidgetType.JOYSTICK:
             d.turbo_key = changed.get("turbo_key", d.turbo_key)
             d.turbo_offset = changed.get("turbo_offset", d.turbo_offset)
             d.creep_key = changed.get("creep_key", d.creep_key)
             d.creep_offset = changed.get("creep_offset", d.creep_offset)
         if new_type != old_type:
+            # EYES 单例：切换到 EYES 时移除旧 Eyes
+            if new_type == WidgetType.EYES:
+                from src.ui.tools.eyes_widget import EyesWidget
+                for child in list(self._screen.children):
+                    if isinstance(child, EyesWidget) and child is not w:
+                        self._screen.remove_widget(child)
+                d.key = ""  # EYES 不绑定按键
+            # EYES → 其他类型：清除 mouseMoveMap
+            if old_type == WidgetType.EYES:
+                self._screen.mouse_move_start = None
             self._screen.replace_widget(w, d)
             new_selected = self._screen.children[-1] if self._screen.children else None
             self._screen.select_widget(new_selected)
             self._property_panel.fill_from_data(d)
         else:
             self._screen.relayout_widgets()
+            # EYES 移动后同步 mouseMoveMap
+            if new_type == WidgetType.EYES:
+                self._screen.mouse_move_start = (d.pos_x, d.pos_y)
         self.canvas.update()
 
     # ── 键盘事件 ──
@@ -273,7 +339,7 @@ class TouchPage(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         if self._test_mode:
             key_str = qt_key_to_str(event.key())
-            if key_str and self._screen.handle_key_press(key_str):
+            if key_str and self._screen.process_key_press(key_str):
                 self.canvas.update()
                 return
         # 编辑模式：方向键微调
@@ -291,7 +357,7 @@ class TouchPage(QWidget):
     def keyReleaseEvent(self, event: QKeyEvent):
         if self._test_mode:
             key_str = qt_key_to_str(event.key())
-            if key_str and self._screen.handle_key_release(key_str):
+            if key_str and self._screen.process_key_release(key_str):
                 self.canvas.update()
                 return
         super().keyReleaseEvent(event)
@@ -304,53 +370,6 @@ class TouchPage(QWidget):
     def background_pixmap(self):
         return self._background_pixmap
 
-
-class TouchCanvas(QWidget):
-    def __init__(self, touch_page: TouchPage):
-        super().__init__()
-        self._page = touch_page
-        self.setMouseTracking(True)
-        self.setStyleSheet("background-color: #1a1a1a; border-radius: 8px;")
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor(26, 26, 26))
-        if self._page.background_pixmap and not self._page.background_pixmap.isNull():
-            rect = self._page.screen.screen_rect
-            painter.drawPixmap(
-                int(rect.x()), int(rect.y()),
-                int(rect.width()), int(rect.height()),
-                self._page.background_pixmap
-            )
-        if not self._page.screen.keymap_data and not self._page.background_pixmap:
-            painter.setPen(QColor(120, 120, 120))
-            font = QFont("Microsoft YaHei", 14)
-            painter.setFont(font)
-            painter.drawText(self.rect(), Qt.AlignCenter,
-                             "请点击上方按钮加载映射文件或导入背景图片")
-        self._page.screen.draw(painter)
-        painter.end()
-
-    def mousePressEvent(self, event: QMouseEvent):
-        self._page.screen.select_widget_at(event.x(), event.y())
-        self._page.screen.handle_mouse_press(event.x(), event.y(), event.button())
-        self._page._property_panel.fill_from_data(
-            self._page.screen.selected_widget.data if self._page.screen.selected_widget else None
-        )
-        self.update()
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        self._page.screen.handle_mouse_move(event.x(), event.y())
-        self.update()
-        w = self._page.screen.selected_widget
-        if w and w.data:
-            self._page._property_panel.fill_from_data(w.data)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        self._page.screen.handle_mouse_release(event.x(), event.y(), event.button())
-        self.update()
-        w = self._page.screen.selected_widget
-        if w and w.data:
-            self._page._property_panel.fill_from_data(w.data)
+    @property
+    def property_panel(self):
+        return self._property_panel

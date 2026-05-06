@@ -1,11 +1,16 @@
 from PyQt5.QtCore import Qt, QRectF, QPoint
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QFont, QCursor
 from PyQt5.QtWidgets import QWidget, QApplication
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.core.handlers.test_input_handler import TestInputHandler
 from src.ui.tools.base_component import BaseComponent
 from src.ui.tools.base_widget import BaseWidget
-from src.utils.widgets_data import WidgetsData, WidgetType
+from src.utils.widgets_data import WidgetsData
 from src.utils.enums import IconType
+from src.utils.mapping_io import MappingIO
 from src.ui.tools.registry import register_component, create_component
+from src.core.handlers.base_handler import BaseHandler
 
 import src.ui.tools.joystick_component
 import src.ui.tools.button_widget
@@ -16,31 +21,23 @@ import src.ui.tools.radial_widget
 @register_component(IconType.SCREEN)
 class ScreenComponent(BaseComponent):
 
-    DEFAULT_WIDTH = 2400
-    DEFAULT_HEIGHT = 1080
-    DEFAULT_RATIO = DEFAULT_WIDTH / DEFAULT_HEIGHT
-    FORMAT_IDENTIFIER = "mirrorTouch"
+    DEFAULT_RATIO = MappingIO.DEFAULT_WIDTH / MappingIO.DEFAULT_HEIGHT
 
     def __init__(self, x: int, y: int, size: int = 480,
                  name: str = "屏幕", icon_type=IconType.SCREEN, parent=None,
                  handler=None):
         super().__init__(x, y, size, name, icon_type, parent, handler)
-        self.screen_width = self.DEFAULT_WIDTH
-        self.screen_height = self.DEFAULT_HEIGHT
+        self.screen_width = MappingIO.DEFAULT_WIDTH
+        self.screen_height = MappingIO.DEFAULT_HEIGHT
         self.mouse_move_start = None
         self.mouse_move_speed_x = 1.0
         self.mouse_move_speed_y = 1.0
         self.keymap_data = None
         self._selected_widget: BaseWidget | None = None
-        self._parent_widget: QWidget | None = parent if isinstance(parent, QWidget) else None
 
-        # 测试模式
+        # 测试模式（鼠标锁定由 Screen 管理，键盘输入由 TestInputHandler 管理）
         self._test_mode = False
-        self._hold_states: dict[str, bool] = {}
-        self._active_directions: set[str] = set()
-        self._active_mod_keys: set[str] = set()
-        self._joystick_widget = None
-        self._active_radial = None
+        self._test_input_handler = None  # 由 TouchPage 注入
 
         # 鼠标锁定
         self._mouse_locked = False
@@ -50,17 +47,71 @@ class ScreenComponent(BaseComponent):
         self._mouse_cy_local = 0
         self._mouse_trail: str = ""  # 轨迹日志
 
-    # ── 测试模式 ──
+        # Handler 链（按 priority 排序后链式调用）
+        self._handlers: list[BaseHandler] = []
+        self._canvas: "QWidget | None" = None
+
+    # ── Canvas 引用 ──
+
+    def set_canvas(self, canvas: "QWidget"):
+        """设置画布引用（TouchCanvas 初始化时调用）"""
+        self._canvas = canvas
+
+    # ── Handler 注册 ──
+
+    @property
+    def handlers(self) -> list:
+        return sorted(self._handlers, key=lambda h: h.priority)
+
+    def register_handler(self, handler: BaseHandler):
+        """注册一个 Handler（自动按 priority 排序）"""
+        if handler not in self._handlers:
+            self._handlers.append(handler)
+
+    def remove_handler(self, handler: BaseHandler):
+        """移除一个 Handler"""
+        if handler in self._handlers:
+            self._handlers.remove(handler)
+
+    # ── 事件入口（View → Handler 链） ──
+
+    def process_mouse_press(self, pos: QPoint, button):
+        """鼠标按下 → 遍历 Handler 链"""
+        for handler in self.handlers:
+            if handler.on_press(pos, button, self, self._canvas) == BaseHandler.HANDLED:
+                break
+
+    def process_mouse_move(self, pos: QPoint):
+        """鼠标移动 → 遍历 Handler 链"""
+        for handler in self.handlers:
+            if handler.on_move(pos, self, self._canvas) == BaseHandler.HANDLED:
+                break
+
+    def process_mouse_release(self, pos: QPoint, button):
+        """鼠标释放 → 遍历 Handler 链"""
+        for handler in self.handlers:
+            if handler.on_release(pos, button, self, self._canvas) == BaseHandler.HANDLED:
+                break
+
+    # ── 测试模式（键盘委托给 TestInputHandler，鼠标保留在 Screen） ──
 
     @property
     def test_mode(self):
         return self._test_mode
 
+    def set_test_input_handler(self, handler: "TestInputHandler"):
+        """注入 TestInputHandler（由 TouchPage 在初始化时调用）"""
+        self._test_input_handler = handler
+
     def set_test_mode(self, enabled: bool):
         self._test_mode = enabled
         if enabled:
             self._enter_test_mode()
+            if self._test_input_handler:
+                self._test_input_handler.enter_test_mode(self)
         else:
+            if self._test_input_handler:
+                self._test_input_handler.exit_test_mode()
             self._exit_test_mode()
         self._request_update()
 
@@ -68,172 +119,45 @@ class ScreenComponent(BaseComponent):
         self.set_test_mode(not self._test_mode)
 
     def _enter_test_mode(self):
+        """进入测试模式：鼠标锁定 + 隐藏光标"""
         self._mouse_locked = True
         self._mouse_dx = 0
         self._mouse_dy = 0
         self._mouse_trail = ""
         self._resetting_mouse = False
-        self._mouse_center_x = QCursor.pos().x()
-        self._mouse_center_y = QCursor.pos().y()
+
+        # 若有 Eyes 组件，以 Eyes 中心为基准（不强制跳转鼠标）
+        eyes = self._find_eyes()
+        if eyes:
+            eyes.set_test_center(eyes.x, eyes.y)
+            self._mouse_center_x = QCursor.pos().x()
+            self._mouse_center_y = QCursor.pos().y()
+        else:
+            self._mouse_center_x = QCursor.pos().x()
+            self._mouse_center_y = QCursor.pos().y()
+
         QApplication.setOverrideCursor(Qt.BlankCursor)
 
     def _exit_test_mode(self):
-        """退出测试模式，恢复所有状态"""
+        """退出测试模式：鼠标解锁 + 恢复光标"""
         self._mouse_locked = False
         QApplication.restoreOverrideCursor()
-        self._hold_states.clear()
-        for child in self.children:
-            if child.data and child.data.widget_type == WidgetType.HOLD:
-                child.is_hold = False
-        if self._joystick_widget:
-            self._joystick_widget.is_turbo = False
-            self._joystick_widget.is_creep = False
-            self._joystick_widget.reset_knob()
-            self._joystick_widget = None
-        if self._active_radial:
-            self._active_radial.deactivate()
-            self._active_radial = None
-        self._active_directions.clear()
-        self._active_mod_keys.clear()
-        self._request_update()
+        eyes = self._find_eyes()
+        if eyes:
+            eyes.reset_test_trail()
 
-    def _find_joystick(self):
-        if self._joystick_widget:
-            return self._joystick_widget
-        for child in self.children:
-            if child.data and child.data.widget_type == WidgetType.JOYSTICK:
-                self._joystick_widget = child
-                return child
-        return None
+    # ── 键盘事件入口（委托给 TestInputHandler） ──
 
-    def _get_joystick_key_parts(self) -> list:
-        joy = self._find_joystick()
-        if not joy or not joy.data:
-            return []
-        parts = joy.data.key.split("|")
-        while len(parts) < 4:
-            parts.append("")
-        return parts[:4]
-
-    def _update_joystick_from_directions(self):
-        joy = self._find_joystick()
-        if not joy:
-            return
-        parts = self._get_joystick_key_parts()
-        if not parts:
-            return
-
-        dx, dy = 0, 0
-        if parts[0] and parts[0] in self._active_directions:
-            dy = -1
-        if parts[1] and parts[1] in self._active_directions:
-            dy = 1
-        if parts[2] and parts[2] in self._active_directions:
-            dx = -1
-        if parts[3] and parts[3] in self._active_directions:
-            dx = 1
-
-        turbo_key = joy.data.turbo_key if joy.data else ""
-        creep_key = joy.data.creep_key if joy.data else ""
-        joy.is_turbo = bool(turbo_key and turbo_key in self._active_mod_keys)
-        joy.is_creep = bool(creep_key and creep_key in self._active_mod_keys)
-
-        joy.set_direction(dx, dy)
-        self._request_update()
-
-    def refresh_joystick(self):
-        self._update_joystick_from_directions()
-
-    def handle_key_press(self, key_str: str):
-        if not self._test_mode:
-            return False
-
-        # 摇杆相关按键
-        joy = self._find_joystick()
-        if joy and joy.data:
-            parts = self._get_joystick_key_parts()
-            if key_str in parts:
-                self._active_directions.add(key_str)
-                self._update_joystick_from_directions()
-                return True
-            if key_str == joy.data.turbo_key:
-                self._active_mod_keys.add(key_str)
-                self._update_joystick_from_directions()
-                return True
-            if key_str == joy.data.creep_key:
-                self._active_mod_keys.add(key_str)
-                self._update_joystick_from_directions()
-                return True
-
-        # 转盘激活
-        for child in self.children:
-            if not child.data or child.data.widget_type != WidgetType.RADIAL:
-                continue
-            if child.data.key == key_str:
-                child.activate()
-                child.is_hold = True
-                self._active_radial = child
-                self._request_update()
-                return True
-
-        # 普通控件
-        for child in self.children:
-            if not child.data or child.data.widget_type == WidgetType.JOYSTICK:
-                continue
-            if child.data.key == key_str:
-                if child.data.widget_type == WidgetType.HOLD:
-                    current = self._hold_states.get(key_str, False)
-                    child.is_hold = not current
-                    self._hold_states[key_str] = not current
-                elif child.data.widget_type in (WidgetType.CLICK, WidgetType.EYES):
-                    child.is_hold = True
-                self._request_update()
-                return True
-
+    def process_key_press(self, key_str: str) -> bool:
+        """键盘按下 → 通知 TestInputHandler"""
+        if self._test_input_handler:
+            return self._test_input_handler.on_key_press(key_str, self) == BaseHandler.HANDLED
         return False
 
-    def handle_key_release(self, key_str: str):
-        if not self._test_mode:
-            return False
-
-        # 摇杆方向键释放
-        joy = self._find_joystick()
-        if joy and joy.data:
-            parts = self._get_joystick_key_parts()
-            if key_str in parts:
-                self._active_directions.discard(key_str)
-                self._update_joystick_from_directions()
-                return True
-            if key_str == joy.data.turbo_key:
-                self._active_mod_keys.discard(key_str)
-                self._update_joystick_from_directions()
-                return True
-            if key_str == joy.data.creep_key:
-                self._active_mod_keys.discard(key_str)
-                self._update_joystick_from_directions()
-                return True
-
-        # 转盘释放
-        for child in self.children:
-            if not child.data or child.data.widget_type != WidgetType.RADIAL:
-                continue
-            if child.data.key == key_str:
-                child.deactivate()
-                child.is_hold = False
-                self._active_radial = None
-                self._request_update()
-                return True
-
-        # 普通控件释放
-        for child in self.children:
-            if not child.data or child.data.widget_type == WidgetType.JOYSTICK:
-                continue
-            if child.data.key == key_str:
-                if child.data.widget_type in (WidgetType.CLICK, WidgetType.EYES):
-                    child.is_hold = False
-                self._request_update()
-                return True
-
+    def process_key_release(self, key_str: str) -> bool:
+        """键盘释放 → 通知 TestInputHandler"""
+        if self._test_input_handler:
+            return self._test_input_handler.on_key_release(key_str, self) == BaseHandler.HANDLED
         return False
 
     # ── 屏幕区域 ──
@@ -262,21 +186,13 @@ class ScreenComponent(BaseComponent):
             raise TypeError("ScreenComponent 只接受 BaseWidget 实例")
         widget.parent = self
         self.add_child(widget)
-        if widget.data and widget.data.widget_type == WidgetType.JOYSTICK:
-            self._joystick_widget = widget
 
     def remove_widget(self, widget: BaseWidget):
         if widget in self.children:
             self.children.remove(widget)
-        if widget is self._joystick_widget:
-            self._joystick_widget = None
-        if widget is self._active_radial:
-            self._active_radial = None
 
     def clear_widgets(self):
         self.children.clear()
-        self._joystick_widget = None
-        self._active_radial = None
 
     def relayout_widgets(self):
         for child in self.children:
@@ -284,35 +200,41 @@ class ScreenComponent(BaseComponent):
                 child.data.pos_x, child.data.pos_y
             )
             child.size = int(self.size * child.data.scale_size)
+        # 同步 Eyes → mouseMoveMap
+        eyes = self._find_eyes()
+        if eyes and eyes.data:
+            self.mouse_move_start = (eyes.data.pos_x, eyes.data.pos_y)
 
     # ── 选中与微调 ──
 
-    def select_widget_at(self, px: int, py: int):
-        hit = None
-        for child in reversed(self.children):
-            if child.contains(px, py):
-                hit = child
-                break
-        self.select_widget(hit)
+    @property
+    def selected_widget(self) -> BaseWidget | None:
+        return self._selected_widget
 
-    def select_widget(self, widget: BaseWidget | None):
+    @selected_widget.setter
+    def selected_widget(self, widget: BaseWidget | None):
+        """设置选中控件（由 Handler 调用）"""
+        if self._selected_widget is widget:
+            return
         if self._selected_widget:
-            self._selected_widget.is_hold = False
+            self._selected_widget.deselect()
         self._selected_widget = widget
         if widget:
-            widget.is_hold = True
+            widget.select()
+
+    def select_widget(self, widget: BaseWidget | None):
+        """选择控件（兼容旧接口，内部调用 setter）"""
+        self.selected_widget = widget
         self._request_update()
 
     def move_selected(self, dx: int, dy: int):
+        """方向键微调（编辑模式）"""
         if self._selected_widget:
             self._selected_widget.move_to(
                 self._selected_widget.x + dx,
                 self._selected_widget.y + dy,
             )
-
-    @property
-    def selected_widget(self):
-        return self._selected_widget
+            self._request_update()
 
     # ── 组件工厂 ──
 
@@ -333,93 +255,30 @@ class ScreenComponent(BaseComponent):
         self.relayout_widgets()
         self._request_update()
 
-    # ── 加载 JSON ──
+    # ── 加载 / 导出 JSON（委托 MappingIO） ──
 
     def load_keymap(self, json_data: dict):
         self.keymap_data = json_data
-        if json_data.get(self.FORMAT_IDENTIFIER) is True:
-            self._load_mirror_format(json_data)
-        else:
-            self._load_scrcpy_format(json_data)
+        result = MappingIO.load(json_data)
+        self.screen_width = result['width']
+        self.screen_height = result['height']
+        self.mouse_move_start = result['mouse_move_start']
+        self.mouse_move_speed_x = result['mouse_move_speed_x']
+        self.mouse_move_speed_y = result['mouse_move_speed_y']
+        self.clear_widgets()
+        for data in result['widgets_data']:
+            self.add_widget(self._create_widget(data))
         self.relayout_widgets()
         self._request_update()
         print(f"[Screen] 加载完成: {self.screen_width}x{self.screen_height}, 控件: {len(self.children)}")
 
-    def _load_mirror_format(self, json_data: dict):
-        self.screen_width = json_data.get("width", self.DEFAULT_WIDTH)
-        self.screen_height = json_data.get("height", self.DEFAULT_HEIGHT)
-        mm = json_data.get("mouseMoveMap", {})
-        if mm:
-            sp = mm.get("startPos", {})
-            self.mouse_move_start = (sp.get("x", 0.5), sp.get("y", 0.5))
-            self.mouse_move_speed_x = mm.get("speedRatioX", 1.0)
-            self.mouse_move_speed_y = mm.get("speedRatioY", 1.0)
-        self.clear_widgets()
-        for item in json_data.get("widgets", []):
-            data = WidgetsData.from_dict(item)
-            self.add_widget(self._create_widget(data))
-
-    def _load_scrcpy_format(self, json_data: dict):
-        self.screen_width = json_data.get("width", self.DEFAULT_WIDTH)
-        self.screen_height = json_data.get("height", self.DEFAULT_HEIGHT)
-        mm = json_data.get("mouseMoveMap", {})
-        if mm:
-            sp = mm.get("startPos", {})
-            self.mouse_move_start = (sp.get("x", 0.5), sp.get("y", 0.5))
-            self.mouse_move_speed_x = mm.get("speedRatioX", 1.0)
-            self.mouse_move_speed_y = mm.get("speedRatioY", 1.0)
-        self.clear_widgets()
-        for node in json_data.get("keyMapNodes", []):
-            ntype = node.get("type", "")
-            if ntype == "KMT_STEER_WHEEL":
-                pos = node.get("centerPos", {})
-                key_str = "|".join([
-                    node.get("upKey", "Key_W"),
-                    node.get("downKey", "Key_S"),
-                    node.get("leftKey", "Key_A"),
-                    node.get("rightKey", "Key_D"),
-                ])
-                data = WidgetsData(
-                    key=key_str,
-                    comment=node.get("comment", "摇杆"),
-                    switch_map=node.get("switchMap", False),
-                    widget_type=WidgetType.JOYSTICK,
-                    pos_x=pos.get("x", 0.17), pos_y=pos.get("y", 0.77),
-                    scale_size=0.08,
-                )
-                data.turbo_key = node.get("upKey", "")
-                data.turbo_offset = node.get("upOffset", 0.2)
-            elif ntype == "KMT_CLICK":
-                pos = node.get("pos", {})
-                data = WidgetsData(
-                    key=node.get("key", ""),
-                    comment=node.get("comment", ""),
-                    switch_map=node.get("switchMap", False),
-                    widget_type=WidgetType.CLICK,
-                    pos_x=pos.get("x", 0), pos_y=pos.get("y", 0),
-                    scale_size=0.025,
-                )
-            else:
-                continue
-            self.add_widget(self._create_widget(data))
-
-    # ── 导出 JSON ──
-
     def export_keymap(self) -> dict:
-        return {
-            self.FORMAT_IDENTIFIER: True,
-            "width": self.screen_width,
-            "height": self.screen_height,
-            "mouseMoveMap": {
-                "startPos": {
-                    "x": self.mouse_move_start[0] if self.mouse_move_start else 0.5,
-                    "y": self.mouse_move_start[1] if self.mouse_move_start else 0.5,
-                },
-                "speedRatioX": self.mouse_move_speed_x,
-                "speedRatioY": self.mouse_move_speed_y,
-            },
-            "widgets": [w.data.to_dict() for w in self.children],
-        }
+        return MappingIO.export(
+            self.screen_width, self.screen_height,
+            self.mouse_move_start,
+            self.mouse_move_speed_x, self.mouse_move_speed_y,
+            self.children,
+        )
 
     # ── 绘制 ──
 
@@ -454,33 +313,49 @@ class ScreenComponent(BaseComponent):
 
         painter.restore()
 
-    # ── 事件转发 ──
+    # ── 测试模式鼠标锁定处理（保留在 ScreenComponent，后续迁移到 TestInputHandler） ──
 
-    def handle_mouse_press(self, px: int, py: int, button):
-        for child in reversed(self.children):
-            if child.handle_mouse_press(px, py, button):
-                return True
-        return False
+    def handle_test_mouse_move(self):
+        """测试模式下的鼠标锁定 + 转盘角度/视角轨迹更新"""
+        if not self._mouse_locked:
+            return
+        if self._resetting_mouse:
+            self._resetting_mouse = False
+            return
 
-    def handle_mouse_move(self, px: int, py: int):
-        if self._mouse_locked:
-            if self._resetting_mouse:
-                self._resetting_mouse = False
-                return
-            cur = QCursor.pos()
-            self._mouse_dx = cur.x() - self._mouse_center_x
-            self._mouse_dy = cur.y() - self._mouse_center_y
-            self._mouse_trail = f"{self._mouse_dx:+d},{self._mouse_dy:+d}"
-            if self._active_radial:
-                self._active_radial.update_angle(self._mouse_dx, self._mouse_dy)
-            self._resetting_mouse = True
-            QCursor.setPos(self._mouse_center_x, self._mouse_center_y)
+        cur = QCursor.pos()
+        dx = cur.x() - self._mouse_center_x
+        dy = cur.y() - self._mouse_center_y
+
+        # ── 视角模式：鼠标自由移动，记录轨迹，触碰边界跳转 ──
+        eyes = self._find_eyes()
+        if eyes:
+            # 获取 Canvas 内的鼠标局部坐标用于轨迹绘制
+            if self._canvas:
+                local = self._canvas.mapFromGlobal(cur)
+                eyes.test_update_trail(local.x(), local.y())
+            else:
+                eyes.test_update_trail(dx, dy)
+            self._mouse_trail = f"{dx:+d},{dy:+d}"
             self._request_update()
             return
-        for child in self.children:
-            child.handle_mouse_move(px, py)
+
+        # ── 普通模式：鼠标锁定 + 转盘角度更新 ──
+        self._mouse_dx = dx
+        self._mouse_dy = dy
+        self._mouse_trail = f"{dx:+d},{dy:+d}"
+        active_radial = self._test_input_handler.active_radial if self._test_input_handler else None
+        if active_radial:
+            active_radial.update_angle(self._mouse_dx, self._mouse_dy)
+
+        self._resetting_mouse = True
+        QCursor.setPos(self._mouse_center_x, self._mouse_center_y)
         self._request_update()
 
-    def handle_mouse_release(self, px: int, py: int, button):
+    def _find_eyes(self):
+        """查找 Screen 中的 EyesWidget"""
+        from src.ui.tools.eyes_widget import EyesWidget
         for child in self.children:
-            child.handle_mouse_release(px, py, button)
+            if isinstance(child, EyesWidget):
+                return child
+        return None

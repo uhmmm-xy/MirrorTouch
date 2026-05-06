@@ -2,13 +2,14 @@ import math
 from PyQt5.QtCore import Qt, QRectF, QTimer
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont
 from src.ui.tools.base_widget import BaseWidget
+from src.ui.abilities import Selectable, Draggable, Directional
 from src.utils.widgets_data import WidgetsData, WidgetType
 from src.utils.enums import IconType
 from src.ui.tools.registry import register_component
 
 
 @register_component(IconType.JOYSTICK)
-class JoystickComponent(BaseWidget):
+class JoystickComponent(BaseWidget, Selectable, Draggable, Directional):
     """摇杆控件：三圈同心圆 + 摇杆头 + 月牙高光"""
 
     def __init__(self, data: WidgetsData = None, parent=None, handler=None):
