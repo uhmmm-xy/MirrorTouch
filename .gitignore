@@ -20,4 +20,4 @@ Thumbs.db
 .DS_Store
 
 #测试文件
-test*
+test.*
