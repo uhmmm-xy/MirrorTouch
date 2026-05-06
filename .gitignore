@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+#测试文件
+test.*
