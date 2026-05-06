@@ -4,6 +4,8 @@ from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QMouseEvent, QCursor, QPainter
 from src.ui.tools.event_handler import EventHandler
 from src.utils.enums import ComponentEvent, IconType
+from src.utils.helpers import dist, lerp, vec_len
+from src.utils.logger import log
 from src.ui.tools.registry import create_component
 
 
@@ -43,7 +45,7 @@ class MirrorPage(QWidget):
             self._lock_center = self.mapToGlobal(self.rect().center())
             self._last_global_pos = QCursor.pos()
             self._report_timer.start()
-            print(f"[MirrorTouch] 锁定, 窗口中心: {self.rect().center()}")
+            log.info(f"[MirrorTouch] 锁定, 窗口中心: {self.rect().center()}")
         else:
             self._report_timer.stop()
             self._lock_center = None
@@ -52,7 +54,7 @@ class MirrorPage(QWidget):
             self._joystick.knob_x = self._joystick.x
             self._joystick.knob_y = self._joystick.y
             self.label.update()
-            print("[MirrorTouch] 解锁, 摇杆回中")
+            log.info("[MirrorTouch] 解锁, 摇杆回中")
 
     def _tick(self):
         if not self._locked:
@@ -68,12 +70,11 @@ class MirrorPage(QWidget):
             dx += 1
         target_x, target_y = self._joystick.x, self._joystick.y
         if dx != 0 or dy != 0:
-            dist = math.sqrt(dx * dx + dy * dy)
-            target_x = self._joystick.x + int(dx / dist * self._joystick.max_knob_offset)
-            target_y = self._joystick.y + int(dy / dist * self._joystick.max_knob_offset)
-        lerp_factor = 0.35
-        self._joystick.knob_x += int((target_x - self._joystick.knob_x) * lerp_factor)
-        self._joystick.knob_y += int((target_y - self._joystick.knob_y) * lerp_factor)
+            dist_val = vec_len(dx, dy)
+            target_x = self._joystick.x + int(dx / dist_val * self._joystick.max_knob_offset)
+            target_y = self._joystick.y + int(dy / dist_val * self._joystick.max_knob_offset)
+        self._joystick.knob_x += int(lerp(self._joystick.knob_x, target_x, 0.35))
+        self._joystick.knob_y += int(lerp(self._joystick.knob_y, target_y, 0.35))
         self.label.update()
 
     def keyPressEvent(self, event):
@@ -123,9 +124,9 @@ class MirrorPage(QWidget):
     def _on_joystick_drag_move(self, component, px, py):
         offset_x = px - component.x
         offset_y = py - component.y
-        dist = math.sqrt(offset_x ** 2 + offset_y ** 2)
-        if dist > component.max_knob_offset:
-            ratio = component.max_knob_offset / dist
+        dist_val = vec_len(offset_x, offset_y)
+        if dist_val > component.max_knob_offset:
+            ratio = component.max_knob_offset / dist_val if dist_val > 0 else 1.0
             offset_x *= ratio
             offset_y *= ratio
         component.knob_x = component.x + int(offset_x)

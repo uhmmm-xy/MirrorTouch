@@ -9,6 +9,8 @@ from src.ui.tools.property_panel import PropertyPanel
 from src.utils.enums import IconType, WidgetType, ComponentEvent
 from src.ui.tools.registry import create_component
 from src.ui.tools.screen_component import ScreenComponent
+from src.utils.helpers import safe_ratio
+from src.utils.logger import log
 from src.core.handlers import SelectHandler, DragHandler, ResizeHandler, AddWidgetHandler, DeleteHandler, PropertyEditHandler, TestInputHandler, UndoHandler
 import src.ui.tools.joystick_component
 import src.ui.tools.button_widget
@@ -210,7 +212,7 @@ class TouchPage(QWidget):
         if self._background_pixmap and not self._background_pixmap.isNull():
             ratio = self._background_pixmap.width() / self._background_pixmap.height()
         elif self._screen.keymap_data:
-            ratio = self._screen.screen_width / max(self._screen.screen_height, 1)
+            ratio = safe_ratio(self._screen.screen_width, self._screen.screen_height, ScreenComponent.DEFAULT_RATIO)
         else:
             ratio = ScreenComponent.DEFAULT_RATIO
         if aw / ah > ratio:
@@ -239,9 +241,9 @@ class TouchPage(QWidget):
                 self._screen.relayout_widgets()
                 self.btn_export.setEnabled(True)
                 self.canvas.update()
-                print(f"[TouchPage] 已加载: {path}")
+                log.info(f"[TouchPage] 已加载: {path}")
             except Exception as e:
-                print(f"[TouchPage] 加载失败: {e}")
+                log.error(f"[TouchPage] 加载失败: {e}")
 
     def _on_export_keymap(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -254,9 +256,9 @@ class TouchPage(QWidget):
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 self._undo_handler.clear()
                 self.canvas.update()
-                print(f"[TouchPage] 已导出: {path}")
+                log.info(f"[TouchPage] 已导出: {path}")
             except Exception as e:
-                print(f"[TouchPage] 导出失败: {e}")
+                log.error(f"[TouchPage] 导出失败: {e}")
 
     def _on_load_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -267,18 +269,18 @@ class TouchPage(QWidget):
             try:
                 self._background_pixmap = QPixmap(path)
                 if self._background_pixmap.isNull():
-                    print("[TouchPage] 图片加载失败")
+                    log.error("[TouchPage] 图片加载失败")
                     return
                 self._fit_screen_to_window()
                 if self._screen.keymap_data:
                     self._screen.relayout_widgets()
                 self.canvas.update()
-                print(f"[TouchPage] 已加载背景: {path}")
+                log.info(f"[TouchPage] 已加载背景: {path}")
             except Exception as e:
-                print(f"[TouchPage] 图片加载失败: {e}")
+                log.error(f"[TouchPage] 图片加载失败: {e}")
 
     def _on_scrcpy(self):
-        print("[TouchPage] Scrcpy 投屏功能需要在设置页面配置参数后启用")
+        log.info("[TouchPage] Scrcpy 投屏功能需要在设置页面配置参数后启用")
 
     @property
     def undo_handler(self):

@@ -4,6 +4,7 @@ from src.ui.tools.base_component import BaseComponent
 from src.ui.abilities.selectable import Selectable
 from src.ui.abilities.draggable import Draggable
 from src.ui.abilities.resizable import Resizable
+from src.utils.helpers import clamp
 from src.utils.widgets_data import WidgetsData, WidgetType
 from src.utils.key_descriptions import describe
 
@@ -70,13 +71,13 @@ class BaseWidget(BaseComponent, Selectable, Draggable, Resizable):
         if self.data:
             short = describe(self.data.key)
             painter.setPen(QColor(255, 255, 255, 220))
-            font = QFont("Microsoft YaHei", max(8, int(s * 0.35)))
+            font = QFont("Microsoft YaHei", clamp(int(s * 0.35), 8, 99))
             painter.setFont(font)
             painter.drawText(QRectF(cx - half, cy - half, s, s), Qt.AlignCenter, short)
 
             if self.data.comment and self.data.comment != self.data.key:
                 painter.setPen(QColor(200, 200, 200, 180))
-                font_small = QFont("Microsoft YaHei", max(6, int(s * 0.22)))
+                font_small = QFont("Microsoft YaHei", clamp(int(s * 0.22), 6, 99))
                 painter.setFont(font_small)
                 painter.drawText(
                     QRectF(cx - half, cy + half + 2, s, half * 0.6),

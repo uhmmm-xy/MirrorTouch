@@ -6,6 +6,7 @@
 
 from src.core.handlers.base_handler import BaseHandler
 from src.utils.enums import ComponentEvent
+from src.utils.logger import log
 
 
 class PropertyEditHandler(BaseHandler):
@@ -49,4 +50,4 @@ class PropertyEditHandler(BaseHandler):
             data = self._panel.collect_data()
             self._on_changed(data)
         except Exception as e:
-            print(f"[PropertyEditHandler] 收集数据失败: {e}")
+            log.error(f"[PropertyEditHandler] 收集数据失败: {e}")

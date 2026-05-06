@@ -3,6 +3,7 @@ from PyQt5.QtCore import Qt, QRectF, QTimer
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont
 from src.ui.tools.base_widget import BaseWidget
 from src.ui.abilities import Selectable, Draggable, Directional
+from src.utils.helpers import vec_len, lerp
 from src.utils.widgets_data import WidgetsData, WidgetType
 from src.utils.enums import IconType
 from src.ui.tools.registry import register_component
@@ -95,8 +96,8 @@ class JoystickComponent(BaseWidget, Selectable, Draggable, Directional):
             return
 
         lerp_factor = 0.3
-        new_x = self.knob_x + (self._target_x - self.knob_x) * lerp_factor
-        new_y = self.knob_y + (self._target_y - self.knob_y) * lerp_factor
+        new_x = lerp(self.knob_x, self._target_x, 0.3)
+        new_y = lerp(self.knob_y, self._target_y, 0.3)
 
         if abs(new_x - self._target_x) < 0.5 and abs(new_y - self._target_y) < 0.5:
             self.knob_x = self._target_x
@@ -125,7 +126,7 @@ class JoystickComponent(BaseWidget, Selectable, Draggable, Directional):
         dy = self._target_y - self.y
         if dx == 0 and dy == 0:
             return
-        length = math.sqrt(dx * dx + dy * dy)
+        length = vec_len(dx, dy)
         if length < 1:
             return
         max_offset = self.max_knob_offset
@@ -145,7 +146,7 @@ class JoystickComponent(BaseWidget, Selectable, Draggable, Directional):
             self._target_x = self.x
             self._target_y = self.y
         else:
-            length = math.sqrt(dx * dx + dy * dy)
+            length = vec_len(dx, dy)
             if length > 1.0:
                 dx /= length
                 dy /= length

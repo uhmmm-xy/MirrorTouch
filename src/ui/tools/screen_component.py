@@ -9,8 +9,10 @@ from src.ui.tools.base_widget import BaseWidget
 from src.utils.widgets_data import WidgetsData
 from src.utils.enums import IconType
 from src.utils.mapping_io import MappingIO
+from src.utils.helpers import clamp
 from src.ui.tools.registry import register_component, create_component
 from src.core.handlers.base_handler import BaseHandler
+from src.utils.logger import log
 
 import src.ui.tools.joystick_component
 import src.ui.tools.button_widget
@@ -177,7 +179,7 @@ class ScreenComponent(BaseComponent):
         rect = self.screen_rect
         rx = (lx - rect.x()) / rect.width()
         ry = (ly - rect.y()) / rect.height()
-        return max(0, min(1, rx)), max(0, min(1, ry))
+        return clamp(rx, 0.0, 1.0), clamp(ry, 0.0, 1.0)
 
     # ── 控件管理 ──
 
@@ -270,7 +272,7 @@ class ScreenComponent(BaseComponent):
             self.add_widget(self._create_widget(data))
         self.relayout_widgets()
         self._request_update()
-        print(f"[Screen] 加载完成: {self.screen_width}x{self.screen_height}, 控件: {len(self.children)}")
+        log.info(f"[Screen] 加载完成: {self.screen_width}x{self.screen_height}, 控件: {len(self.children)}")
 
     def export_keymap(self) -> dict:
         return MappingIO.export(

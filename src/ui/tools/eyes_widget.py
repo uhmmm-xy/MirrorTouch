@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QFont
 from src.ui.tools.base_widget import BaseWidget
 from src.ui.abilities import Selectable, Draggable
+from src.utils.helpers import clamp
 from src.utils.enums import IconType
 from src.ui.tools.registry import register_component
 from src.utils.widgets_data import WidgetsData
@@ -177,8 +178,8 @@ class EyesWidget(BaseWidget, Selectable, Draggable):
         target_dist = half * random.uniform(0.2, 0.8)
         new_dx = int(qx_min + abs(math.cos(angle)) * (qx_max - qx_min))
         new_dy = int(qy_min + abs(math.sin(angle)) * (qy_max - qy_min))
-        new_dx = max(int(qx_min), min(int(qx_max), new_dx))
-        new_dy = max(int(qy_min), min(int(qy_max), new_dy))
+        new_dx = clamp(new_dx, int(qx_min), int(qx_max))
+        new_dy = clamp(new_dy, int(qy_min), int(qy_max))
 
         # 转为全局坐标移动鼠标
         from PyQt5.QtGui import QCursor
