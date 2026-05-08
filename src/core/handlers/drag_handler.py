@@ -20,10 +20,12 @@ class DragHandler(BaseHandler):
 
     priority: int = 15
 
-    def __init__(self):
-        self._target = None          # 正在拖拽的 widget
+    def __init__(self, undo_handler: "UndoHandler" = None):
+        super().__init__()
+        self._target = None
         self._offset_x: int = 0
         self._offset_y: int = 0
+        self._undo = undo_handler
 
     @property
     def is_dragging(self) -> bool:
@@ -46,6 +48,10 @@ class DragHandler(BaseHandler):
         self._target = target
         self._offset_x = target.x - pos.x()
         self._offset_y = target.y - pos.y()
+
+        # 拖拽开始前记录快照
+        if self._undo:
+            self._undo.record(screen)
 
         target.on_drag_start()
         return self.HANDLED

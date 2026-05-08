@@ -71,13 +71,6 @@ class UndoHandler(BaseHandler):
         if not self.can_undo:
             return self.PASS
 
-        # 当前 snap 是 mousePressEvent 为本次点击记录的（= 当前状态）
-        # 先弹出它，再取真正的上一个快照恢复
-        self._stack.pop()
-        if not self._stack:
-            screen._request_update()
-            return self.HANDLED
-
         # 执行撤销
         snapshot = self._stack.pop()
         screen.clear_widgets()

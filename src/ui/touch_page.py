@@ -79,12 +79,12 @@ class TouchPage(QWidget):
         )
 
         # ── 创建并注册 Handler ──
-        self._select_handler = SelectHandler()
-        self._drag_handler = DragHandler()
-        self._resize_handler = ResizeHandler()
-        self._add_handler = AddWidgetHandler()
-        self._delete_handler = DeleteHandler(drag_handler=self._drag_handler)
         self._undo_handler = UndoHandler()
+        self._select_handler = SelectHandler()
+        self._drag_handler = DragHandler(undo_handler=self._undo_handler)
+        self._resize_handler = ResizeHandler(undo_handler=self._undo_handler)
+        self._add_handler = AddWidgetHandler(undo_handler=self._undo_handler)
+        self._delete_handler = DeleteHandler(drag_handler=self._drag_handler)
         self._test_input_handler = TestInputHandler()
 
         self._screen.register_handler(self._add_handler)

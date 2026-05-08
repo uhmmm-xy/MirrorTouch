@@ -27,11 +27,12 @@ class AddWidgetHandler(BaseHandler):
     BTN_W = 104
     BTN_H = 32
 
-    def __init__(self):
+    def __init__(self, undo_handler: "UndoHandler" = None):
         super().__init__()
         self._enabled = True
-        self._tracking = False       # 是否正在从按钮拖拽
-        self._drag_pos: QPoint | None = None  # 拖拽时鼠标位置
+        self._tracking = False
+        self._drag_pos: QPoint | None = None
+        self._undo = undo_handler
 
     @property
     def enabled(self) -> bool:
@@ -69,6 +70,10 @@ class AddWidgetHandler(BaseHandler):
 
         self._tracking = False
         self._drag_pos = None
+
+        # 添加前记录快照
+        if self._undo:
+            self._undo.record(screen)
 
         # 判断落点：Screen 内 → 落点创建；按钮上 → 中心创建
         if screen.screen_rect.contains(pos):

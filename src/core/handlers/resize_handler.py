@@ -19,11 +19,13 @@ class ResizeHandler(BaseHandler):
 
     priority: int = 25
 
-    def __init__(self):
+    def __init__(self, undo_handler: "UndoHandler" = None):
+        super().__init__()
         self._target = None
         self._initial_size: int = 0
         self._start_x: int = 0
         self._start_y: int = 0
+        self._undo = undo_handler
 
     # ── 鼠标事件 ──
 
@@ -42,6 +44,10 @@ class ResizeHandler(BaseHandler):
         self._initial_size = target.size
         self._start_x = pos.x()
         self._start_y = pos.y()
+
+        # 缩放开始前记录快照
+        if self._undo:
+            self._undo.record(screen)
 
         target.on_resize_start()
         return self.HANDLED

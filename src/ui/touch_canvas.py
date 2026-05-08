@@ -80,9 +80,6 @@ class TouchCanvas(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         screen = self._page.screen
-        # 撤销记录：在处理之前保存快照（用于恢复）
-        if not screen.test_mode:
-            self._page.undo_handler.record(screen)
         screen.process_mouse_press(event.pos(), event.button())
 
         w = screen.selected_widget
