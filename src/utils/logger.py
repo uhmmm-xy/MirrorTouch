@@ -30,16 +30,25 @@ class _Logger:
     def info(self, msg: str):
         if self._prod:
             return
-        print(msg, file=sys.stdout, flush=True)
+        try:
+            print(msg, file=sys.stderr, flush=True)
+        except OSError:
+            os.write(2, (msg + "\n").encode())
 
     def warning(self, msg: str):
         if self._prod:
             return
-        print(f"⚠ {msg}", file=sys.stderr, flush=True)
+        try:
+            print(f"⚠ {msg}", file=sys.stderr, flush=True)
+        except OSError:
+            os.write(2, (f"⚠ {msg}\n").encode())
 
     def error(self, msg: str):
         # 错误始终输出
-        print(f"✗ {msg}", file=sys.stderr, flush=True)
+        try:
+            print(f"✗ {msg}", file=sys.stderr, flush=True)
+        except OSError:
+            os.write(2, (f"✗ {msg}\n").encode())
 
 
 log = _Logger()

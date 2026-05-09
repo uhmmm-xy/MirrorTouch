@@ -1,6 +1,6 @@
 import json
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame, QShortcut
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QColor, QFont, QMouseEvent, QPixmap, QKeyEvent, QKeySequence
 from qfluentwidgets import PushButton
 from src.ui.touch_canvas import TouchCanvas
@@ -12,6 +12,9 @@ from src.ui.tools.screen_component import ScreenComponent
 from src.utils.helpers import safe_ratio
 from src.utils.logger import log
 from src.core.handlers import SelectHandler, DragHandler, ResizeHandler, AddWidgetHandler, DeleteHandler, PropertyEditHandler, TestInputHandler, UndoHandler
+import esper
+from src.core.world_instance.components.stream_config import StreamConfig
+from src.core.config_manager import load_config
 import src.ui.tools.joystick_component
 import src.ui.tools.button_widget
 import src.ui.tools.eyes_widget
@@ -98,7 +101,13 @@ class TouchPage(QWidget):
         self._screen.set_test_input_handler(self._test_input_handler)
 
         self._background_pixmap: QPixmap | None = None
+        self._live_pixmap: QPixmap | None = None
         self._test_mode = False
+        self._streaming = False
+
+        self._frame_timer = QTimer(self)
+        self._frame_timer.timeout.connect(self._update_live_frame)
+        self._frame_timer.start(16)
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -148,9 +157,9 @@ class TouchPage(QWidget):
         toolbar.addWidget(self.btn_image)
         toolbar.addSpacing(6)
 
-        self.btn_scrcpy = PushButton("Scrcpy投屏")
+        self.btn_scrcpy = PushButton("投屏")
         self.btn_scrcpy.setFixedWidth(110)
-        self.btn_scrcpy.clicked.connect(self._on_scrcpy)
+        self.btn_scrcpy.clicked.connect(self._on_scrcpy_toggle)
         toolbar.addWidget(self.btn_scrcpy)
         toolbar.addStretch()
         left_layout.addLayout(toolbar)
@@ -186,13 +195,13 @@ class TouchPage(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_screen_to_window()
-        if self._screen.keymap_data:
+        if self._screen.keymap_data or len(self._screen.children) > 0:
             self._screen.relayout_widgets()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._fit_screen_to_window()
-        if self._screen.keymap_data:
+        if self._screen.keymap_data or len(self._screen.children) > 0:
             self._screen.relayout_widgets()
 
     def _fit_screen_to_window(self):
@@ -209,7 +218,11 @@ class TouchPage(QWidget):
         margin = 20
         aw = cw - margin * 2
         ah = content_h - margin * 2
-        if self._background_pixmap and not self._background_pixmap.isNull():
+        if self._live_pixmap and not self._live_pixmap.isNull():
+            ratio = self._live_pixmap.width() / self._live_pixmap.height()
+            self._screen.screen_width = self._live_pixmap.width()
+            self._screen.screen_height = self._live_pixmap.height()
+        elif self._background_pixmap and not self._background_pixmap.isNull():
             ratio = self._background_pixmap.width() / self._background_pixmap.height()
         elif self._screen.keymap_data:
             ratio = safe_ratio(self._screen.screen_width, self._screen.screen_height, ScreenComponent.DEFAULT_RATIO)
@@ -279,8 +292,19 @@ class TouchPage(QWidget):
             except Exception as e:
                 log.error(f"[TouchPage] 图片加载失败: {e}")
 
-    def _on_scrcpy(self):
-        log.info("[TouchPage] Scrcpy 投屏功能需要在设置页面配置参数后启用")
+    def _on_scrcpy_toggle(self):
+        if self._streaming:
+            esper.dispatch_event("stream.stop")
+            self._streaming = False
+            self.btn_scrcpy.setText("投屏")
+            log.info("[TouchPage] 投屏已停止")
+        else:
+            cfg = load_config()
+            sc = StreamConfig(max_size=cfg.scrcpy_max_size, max_fps=cfg.scrcpy_max_fps, bit_rate=cfg.scrcpy_bit_rate)
+            esper.dispatch_event("stream.start", sc)
+            self._streaming = True
+            self.btn_scrcpy.setText("结束投屏")
+            log.info("[TouchPage] 投屏已启动")
 
     @property
     def undo_handler(self):
@@ -306,9 +330,6 @@ class TouchPage(QWidget):
         d.pos_x = changed.get("pos_x", d.pos_x)
         d.pos_y = changed.get("pos_y", d.pos_y)
         d.scale_size = changed.get("scale_size", d.scale_size)
-        # EYES 不绑定按键
-        if new_type == WidgetType.EYES:
-            d.key = ""
         if new_type == WidgetType.JOYSTICK:
             d.turbo_key = changed.get("turbo_key", d.turbo_key)
             d.turbo_offset = changed.get("turbo_offset", d.turbo_offset)
@@ -321,7 +342,6 @@ class TouchPage(QWidget):
                 for child in list(self._screen.children):
                     if isinstance(child, EyesWidget) and child is not w:
                         self._screen.remove_widget(child)
-                d.key = ""  # EYES 不绑定按键
             # EYES → 其他类型：清除 mouseMoveMap
             if old_type == WidgetType.EYES:
                 self._screen.mouse_move_start = None
@@ -373,5 +393,25 @@ class TouchPage(QWidget):
         return self._background_pixmap
 
     @property
+    def live_pixmap(self):
+        return self._live_pixmap
+
+    @property
     def property_panel(self):
         return self._property_panel
+
+    def _update_live_frame(self):
+        """定时从 World 读取 LatestFrame → QPixmap"""
+        try:
+            from src.core.world_instance.world_bootstrap import get_current_device
+            from src.core.world_instance.components.latest_frame import LatestFrame
+            d = get_current_device()
+            if d == 0 or not esper.entity_exists(d):
+                return
+            if esper.has_component(d, LatestFrame):
+                lf = esper.component_for_entity(d, LatestFrame)
+                if lf.qimage and not lf.qimage.isNull():
+                    self._live_pixmap = QPixmap.fromImage(lf.qimage)
+                    self.canvas.update()
+        except Exception:
+            pass

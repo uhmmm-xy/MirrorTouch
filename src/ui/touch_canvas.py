@@ -48,17 +48,18 @@ class TouchCanvas(QWidget):
         header_rect = self.rect().adjusted(0, 0, 0, -(self.height() - self.HEADER_H))
         painter.fillRect(header_rect, QColor(32, 32, 32))
 
-        # ── Content 区：背景图片 + Screen ──
+        # ── Content 区：投屏帧 → 背景图 → Screen ──
         bg = self._page.background_pixmap
-        if bg and not bg.isNull():
-            rect = screen.screen_rect
-            painter.drawPixmap(
-                int(rect.x()), int(rect.y()),
-                int(rect.width()), int(rect.height()),
-                bg
-            )
+        live = self._page.live_pixmap
+        rect = screen.screen_rect
+        rx, ry, rw, rh = int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height())
 
-        if not screen.keymap_data and (not bg or bg.isNull()):
+        if live and not live.isNull():
+            painter.drawPixmap(rx, ry, rw, rh, live)
+        elif bg and not bg.isNull():
+            painter.drawPixmap(rx, ry, rw, rh, bg)
+
+        if not screen.keymap_data and (not bg or bg.isNull()) and (not live or live.isNull()):
             painter.setPen(QColor(120, 120, 120))
             font = QFont("Microsoft YaHei", 14)
             painter.setFont(font)

@@ -76,6 +76,7 @@ class TestInputHandler(BaseHandler):
         )
         if handled:
             screen._request_update()
+            _dispatch_touch(key_str, "press", screen)
         return handled
 
     def on_key_release(self, key_str: str,
@@ -90,6 +91,7 @@ class TestInputHandler(BaseHandler):
         )
         if handled:
             screen._request_update()
+            _dispatch_touch(key_str, "release", screen)
         return handled
 
     # ── 摇杆处理 ──
@@ -242,5 +244,23 @@ class TestInputHandler(BaseHandler):
 
     @property
     def active_radial(self):
-        """当前激活的转盘（供 ScreenComponent 鼠标移动时更新角度）"""
         return self._active_radial
+
+
+def _dispatch_touch(key_str: str, event: str, screen):
+    """测试模式按键 → 触控引擎"""
+    try:
+        import esper
+        from src.core.world_instance.handlers.coordinate_calc_handler import calc_pixel
+        widget = None
+        for child in screen.children:
+            if child.data and child.data.key == key_str:
+                widget = child
+                break
+        if not widget or not widget.data:
+            return
+        rx, ry = widget.data.pos_x, widget.data.pos_y
+        px, py = calc_pixel(rx, ry)
+        esper.dispatch_event("touch.input", key_str, event, px, py)
+    except Exception:
+        pass

@@ -1,0 +1,12 @@
+{
+  "adb_path": "resources\\libs\\adb\\adb.exe",
+  "serial_port": "COM3",
+  "serial_baud": 115200,
+  "scrcpy_max_size": 1080,
+  "scrcpy_max_fps": 120,
+  "scrcpy_bit_rate": "16000",
+  "render_max_fps": 90,
+  "log_middleware_stdout": false,
+  "keep_service_alive": true,
+  "mapping_path": "E:/project/MirrorTouch/mapping.json"
+}

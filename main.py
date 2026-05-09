@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QObject, QEvent
 from PyQt5.QtGui import QCursor
 from qfluentwidgets import FluentWindow, NavigationItemPosition
 from src.ui.mirror_page import MirrorPage
@@ -17,6 +17,9 @@ from src.ui.serial_page import SerialPage
 from src.ui.settings_page import SettingsPage
 from src.ui.touch_page import TouchPage
 from src.ui.tools.qss_debugger import QssDebugger
+from src.core.world_instance.world_bootstrap import init_world, shutdown_world
+import esper
+from src.utils.logger import log
 
 
 class MainWindow(FluentWindow):
@@ -39,6 +42,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.touch_page, "touch", "触控")
         self.addSubInterface(self.settings_page, "settings", "设置", position=NavigationItemPosition.BOTTOM)
 
+        # 初始化 ESC World
+        init_world()
+
         self._lock_timer = QTimer(self)
         self._lock_timer.timeout.connect(self._force_mouse_center)
         self._lock_timer.setInterval(10)
@@ -52,30 +58,44 @@ class MainWindow(FluentWindow):
             QCursor.setPos(self._lock_center)
             self.mirror_page.setCursor(Qt.BlankCursor)
             self._lock_timer.start()
-            self.mirror_page.set_locked(True)
-            print("[MirrorTouch] 鼠标已锁定到窗口中心")
+            log.info("[MirrorTouch] 鼠标已锁定")
         else:
             self._lock_timer.stop()
             self.mirror_page.setCursor(Qt.ArrowCursor)
             self._lock_center = None
-            self.mirror_page.set_locked(False)
-            print("[MirrorTouch] 鼠标已解锁")
+            log.info("[MirrorTouch] 鼠标已解锁")
 
     def _force_mouse_center(self):
         if self.mouse_locked and self._lock_center:
             QCursor.setPos(self._lock_center)
 
+    def closeEvent(self, event):
+        """安全退出：停止 Session → 停止服务 → 关闭 World"""
+        esper.dispatch_event("stream.stop.force")
+        shutdown_world()
+        event.accept()
+
     def keyPressEvent(self, event):
         if event.modifiers() == Qt.AltModifier and event.key() == Qt.Key_QuoteLeft:
             self.toggle_mouse_lock()
-        super().keyPressEvent(event)
-    
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_F12:
+        elif event.key() == Qt.Key_F12:
             dlg = QssDebugger(self)
             dlg.exec_()
         else:
+            # 投屏页热键 → 触控
+            # self._forward_to_mirror(event)
             super().keyPressEvent(event)
+
+    def _forward_to_mirror(self, event):
+        if self.stackedWidget.currentWidget() is not self.mirror_page:
+            return
+        ek = self.mirror_page._eyes_key
+        t = event.text()
+        if t and t == ek:
+            if self.mirror_page._touch_active:
+                self.mirror_page._deactivate_touch()
+            else:
+                self.mirror_page._activate_touch()
 
 
 if __name__ == "__main__":
