@@ -1,4 +1,5 @@
-"""AdbHandler — ADB 设备检测 + 端口转发"""
+"""AdbHandler — ADB 设备检测 + 端口转发 + 旋转角度查询"""
+import re
 import subprocess
 import esper
 from src.utils.logger import log
@@ -80,3 +81,35 @@ def get_screen_size(adb_path: str, serial: str = "") -> tuple[int, int]:
     except Exception as e:
         log.error(f"[AdbHandler] 分辨率获取失败: {e}")
     return 1080, 1920
+
+
+def query_rotation(adb_path: str, serial: str = "") -> int:
+    """adb shell dumpsys window → 提取 mCurrentRotation 角度值
+
+    Args:
+        adb_path: ADB 可执行文件路径
+        serial:   设备序列号，空串则不指定 -s
+
+    Returns:
+        旋转角度整数（0/90/180/270），失败时返回 0
+    """
+    cmd = [adb_path]
+    if serial:
+        cmd += ["-s", serial]
+    cmd += ["shell", "dumpsys", "window"]
+    try:
+        ret = subprocess.run(cmd, capture_output=True,
+                            encoding="utf-8", errors="replace", timeout=5)
+        match = re.search(r"mCurrentRotation=ROTATION_(\d+)", ret.stdout)
+        if match:
+            angle = int(match.group(1))
+            # ROTATION_0=0°, ROTATION_90=90°, ROTATION_180=180°, ROTATION_270=270°
+            log.info(f"[AdbHandler] 设备旋转角度: {angle}° (raw=ROTATION_{angle})")
+            return angle
+        else:
+            log.warning("[AdbHandler] 未从 dumpsys window 匹配到 mCurrentRotation")
+    except subprocess.TimeoutExpired:
+        log.warning("[AdbHandler] 旋转角度查询超时，使用默认值 0")
+    except Exception as e:
+        log.warning(f"[AdbHandler] 旋转角度查询失败: {e}")
+    return 0

@@ -19,7 +19,7 @@ from src.utils.logger import log
 _eyes_sessions: dict[str, dict] = {}
 
 
-def generate(entity_id: int, cfg, event: str, ox: int, oy: int, bx: int, by: int, sz: int) -> list[TouchInput]:
+def generate(entity_id: int, cfg, event: str, ox: float, oy: float, bx: float, by: float, sz: float) -> list[TouchInput]:
     """Entity 驱动入口：event_type_handler 纯分发至此"""
     if event == "press":
         ti = activate(cfg.key_id, bx, by, sz)
@@ -32,13 +32,13 @@ def generate(entity_id: int, cfg, event: str, ox: int, oy: int, bx: int, by: int
     return []
 
 
-def activate(key_id: str, base_x: int, base_y: int, size: int) -> TouchInput:
+def activate(key_id: str, base_x: float, base_y: float, size: float) -> TouchInput:
     """激活视角会话：在正方形内随机取点，下发 down"""
     half = size / 2.0
     dx = (random.random() - 0.5) * size
     dy = (random.random() - 0.5) * size
-    px = max(0, int(base_x + dx))
-    py = max(0, int(base_y + dy))
+    px = max(0.0, min(1.0, base_x + dx))
+    py = max(0.0, min(1.0, base_y + dy))
 
     _eyes_sessions[key_id] = {
         "base_x": base_x,
@@ -55,7 +55,7 @@ def activate(key_id: str, base_x: int, base_y: int, size: int) -> TouchInput:
     )
 
 
-def on_move(key_id: str, offset_px: int, offset_py: int) -> list[TouchInput]:
+def on_move(key_id: str, offset_x: float, offset_y: float) -> list[TouchInput]:
     """处理鼠标偏移增量 → 累积偏移 → 锚点 + 累积 = 实际位置 → 边界检测
 
     Args:
@@ -66,29 +66,26 @@ def on_move(key_id: str, offset_px: int, offset_py: int) -> list[TouchInput]:
     if not session or not session["active"]:
         return []
 
-    # 累积偏移
-    session["acc_x"] += offset_px
-    session["acc_y"] += offset_py
-    acc_x = session["acc_x"]
-    acc_y = session["acc_y"]
-
+    # 预测：本次偏移后是否会触碰边界？
     base_x = session["base_x"]
     base_y = session["base_y"]
     size = session["size"]
     half = size / 2.0
 
-    # 锚点 + 累积偏移 = 实际触摸位置
-    px = base_x + acc_x
-    py = base_y + acc_y
+    next_acc_x = session["acc_x"] + offset_x
+    next_acc_y = session["acc_y"] + offset_y
 
-    dx_from_base = px - base_x
-    dy_from_base = py - base_y
+    # 预测越界 → 触发跳转（不积累本次偏移）
+    if abs(next_acc_x) >= half or abs(next_acc_y) >= half:
+        return _jump_opposite(key_id, session, next_acc_x, next_acc_y)
 
-    # 触碰边界？
-    if abs(dx_from_base) >= half or abs(dy_from_base) >= half:
-        return _jump_opposite(key_id, session, dx_from_base, dy_from_base)
+    # 未越界：正常累积 + move
+    session["acc_x"] = next_acc_x
+    session["acc_y"] = next_acc_y
 
-    # 正常 move
+    px = base_x + next_acc_x
+    py = base_y + next_acc_y
+
     return [TouchInput(
         base_x=base_x, base_y=base_y,
         x=px, y=py,
@@ -122,7 +119,7 @@ def get_session(key_id: str) -> dict | None:
 # ── 内部 ──
 
 def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[TouchInput]:
-    """触碰边界 → up + 反方向象限随机点 down"""
+    """触碰边界 → up + 反方向象限随机点 down + 清空旧 move 帧"""
     base_x = session["base_x"]
     base_y = session["base_y"]
     size = session["size"]
@@ -136,7 +133,7 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
         event_type="up", key_id=key_id, size=size,
     ))
 
-    # 反方向象限
+    # 反方向象限（与 UI EyesWidget 对齐）
     if dx >= 0 and dy < 0:          # Q1(右上) → Q3(左下)
         rx_min, rx_max = -half, 0
         ry_min, ry_max = 0, half
@@ -150,8 +147,12 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
         rx_min, rx_max = -half, 0
         ry_min, ry_max = -half, 0
 
-    new_dx = int(rx_min + random.random() * (rx_max - rx_min))
-    new_dy = int(ry_min + random.random() * (ry_max - ry_min))
+    import math
+    angle = random.uniform(0, math.pi / 2)
+    new_dx = int(rx_min + abs(math.cos(angle)) * (rx_max - rx_min))
+    new_dy = int(ry_min + abs(math.sin(angle)) * (ry_max - ry_min))
+    new_dx = max(int(rx_min), min(int(rx_max), new_dx))
+    new_dy = max(int(ry_min), min(int(ry_max), new_dy))
     px = max(0, int(base_x + new_dx))
     py = max(0, int(base_y + new_dy))
 
@@ -163,5 +164,6 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
     # 重置累积偏移为新随机点的偏移
     session["acc_x"] = new_dx
     session["acc_y"] = new_dy
+
     log.info(f"[EyesWidget] 边界跳转: key={key_id} ({px},{py})")
     return events

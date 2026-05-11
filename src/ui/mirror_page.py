@@ -44,7 +44,12 @@ def _dispatch_touch(key_str: str, event: str, offset_x: float = 0.0, offset_y: f
 
     offset_x/offset_y: 鼠标增量比例 (move)，press/release 传 (0,0)
     """
-    esper.dispatch_event("touch.input", key_str, event, offset_x, offset_y)
+    from src.core.exceptions import MappingRatioMismatchError
+    try:
+        esper.dispatch_event("touch.input", key_str, event, offset_x, offset_y)
+    except MappingRatioMismatchError as e:
+        log.warning(f"[MirrorPage] 比例不匹配，事件已拦截: {e}")
+        # 不向上抛，UI 层静默拦截
 
 
 class MirrorPage(QWidget):
@@ -125,6 +130,10 @@ class MirrorPage(QWidget):
         self._render_timer.start(interval)
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+
+        # [MIRROR-TOUCH-T2] 投屏创建时自动更新设备信息
+        self._auto_update_device_info(cfg)
+
         log.info(f"[MirrorPage] 投屏 {cfg.scrcpy_max_size}p 推流{cfg.scrcpy_max_fps}fps 渲染{cfg.render_max_fps}fps")
 
     def _on_stop(self):
@@ -140,7 +149,8 @@ class MirrorPage(QWidget):
         """Eyes key 激活触控 + 鼠标锁定"""
         from src.core.world_instance.components.touch_config import TouchConfig
         cfg = load_config()
-        tc = TouchConfig(port=cfg.serial_port, baudrate=cfg.serial_baud)
+        tc = TouchConfig(port=cfg.serial_port, baudrate=cfg.serial_baud,
+                         consume_frequency=cfg.touch_consume_freq)
         esper.dispatch_event("touch.start", tc)
         self._touch_active = True
         self._lock_mouse()
@@ -152,6 +162,69 @@ class MirrorPage(QWidget):
         self._touch_active = False
         self._unlock_mouse()
         log.info("[MirrorPage] 触控已停用")
+
+    def _auto_update_device_info(self, cfg):
+        """[MIRROR-TOUCH-T2] 投屏创建时自动获取设备宽高/旋转角度并更新 DeviceComponent。
+
+        若 adb_serial 与已知设备一致 → 沿用配置。
+        若 adb_serial 变更 → 绑定配置中 COM 端口并持久化。
+        """
+        from PyQt5.QtCore import QThread, pyqtSignal
+        import esper
+        from src.core.world_instance.world_bootstrap import get_device_meta_entity
+        from src.core.world_instance.components.device_component import DeviceComponent
+        from src.core.world_instance.handlers.adb_handler import get_screen_size, query_rotation, detect_device
+
+        ent = get_device_meta_entity()
+        if ent == 0 or not esper.entity_exists(ent):
+            return
+
+        adb = cfg.adb_path or "adb"
+        serial = detect_device(adb)
+        if not serial:
+            return
+
+        class _FetchThread(QThread):
+            finished = pyqtSignal(dict)
+            def __init__(self, adb_p, ser, e):
+                super().__init__()
+                self._adb = adb_p; self._ser = ser; self._ent = e
+            def run(self):
+                r = {"entity": self._ent, "serial": self._ser}
+                try:
+                    w, h = get_screen_size(self._adb, self._ser)
+                    r["width"], r["height"] = w, h
+                    r["rotation"] = query_rotation(self._adb, self._ser)
+                except Exception as ex:
+                    r["error"] = str(ex)
+                self.finished.emit(r)
+
+        def on_finished(result):
+            dc = esper.component_for_entity(ent, DeviceComponent)
+            if result.get("error"):
+                return
+            dc.base_w = result["width"]
+            dc.base_h = result["height"]
+            dc.current_rotation = result["rotation"]
+
+            new_serial = result["serial"]
+            # 设备匹配：沿用已有 COM 绑定
+            if dc.adb_serial == new_serial:
+                pass  # 不变
+            else:
+                dc.adb_serial = new_serial
+                # 新设备：自动绑定当前配置中的 COM 端口
+                dc.bound_com_port = cfg.serial_port or ""
+                # 持久化映射
+                if new_serial:
+                    cfg.device_profiles[new_serial] = cfg.serial_port or ""
+                    from src.core.config_manager import save_config
+                    save_config(cfg)
+            log.info(f"[MirrorPage] 自动更新设备: {dc.base_w}x{dc.base_h} @{dc.current_rotation}° serial={dc.adb_serial}")
+
+        self._auto_fetch_thread = _FetchThread(adb, serial, ent)
+        self._auto_fetch_thread.finished.connect(on_finished)
+        self._auto_fetch_thread.start()
 
     # ── [T7] 异常错误处理 ──
 
@@ -207,7 +280,7 @@ class MirrorPage(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         """[MIRROR-TOUCH-EYES] 鼠标移动增量 → Eyes 触控注入"""
-        
+        from PyQt5.QtGui import QCursor
         if not self._touch_active:
             return
         vw, vh = self.width(), self.height()
@@ -219,10 +292,17 @@ class MirrorPage(QWidget):
             dst_h = min(vh, int(vw / ratio))
         else:
             dst_w, dst_h = vw, vh
-        # 增量 = 鼠标位置相对窗口中心的偏移 → 比例
-        cx, cy = self.rect().center().x(), self.rect().center().y()
-        dx = (event.pos().x() - cx) / max(1, dst_w)
-        dy = (event.pos().y() - cy) / max(1, dst_h)
+
+        # 增量 = 本次全局位置 - 上次全局位置 → 比例
+        cur = QCursor.pos()
+        if not hasattr(self, '_last_cursor'):
+            self._last_cursor = cur
+            return
+        dpix = cur.x() - self._last_cursor.x()
+        dpiy = cur.y() - self._last_cursor.y()
+        self._last_cursor = cur
+        dx = dpix / max(1, dst_w)
+        dy = dpiy / max(1, dst_h)
         _dispatch_touch(self._eyes_key, "move", dx, dy)
 
     # ── 帧渲染 ──
@@ -240,6 +320,7 @@ class MirrorPage(QWidget):
                 self.video_view.set_frame(QPixmap.fromImage(lf.qimage))
                 if not hasattr(self, '_first_frame_logged'):
                     self._first_frame_logged = True
+                    self._feedback.activate(self.video_view)
                     log.info(f"[MirrorPage] 首帧渲染: {lf.width}x{lf.height}")
 
             # 状态更新
@@ -291,6 +372,12 @@ class VideoView(QLabel):
             if (new_w != self._frame_w or new_h != self._frame_h) and self._frame_w > 0:
                 from src.utils.logger import log
                 log.warning(f"[MirrorPage] 分辨率变化: {self._frame_w}x{self._frame_h} → {new_w}x{new_h}，触发触控熔断")
+                # [MIRROR-TOUCH-T2] 分辨率变化时更新 DeviceComponent 旋转角度
+                try:
+                    from src.core.world_instance.handlers.frame_drain_handler import _update_device_rotation
+                    _update_device_rotation()
+                except Exception:
+                    pass
                 # 触发触控系统停机
                 parent = self.parent()
                 if isinstance(parent, MirrorPage) and parent._touch_active:

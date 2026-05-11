@@ -29,16 +29,17 @@ def handle_input(hotkey: str, event: str, offset_x: float = 0.0, offset_y: float
 
     cfg = esper.component_for_entity(eid, WidgetConfig)
 
-    from src.core.world_instance.handlers.coordinate_calc_handler import calc_pixel
-    base_px, base_py = calc_pixel(cfg.pos_x, cfg.pos_y)
-    size_px = int(cfg.scale_size * max(base_px + base_py, 100))
+    # [MIRROR-TOUCH-T3] 比例空间：锚点直接用映射的 ratio 值，不再截断为像素
+    base_rx, base_ry = cfg.pos_x, cfg.pos_y
+    size_r = cfg.scale_size
 
-    offset_px, offset_py = 0, 0
+    offset_rx, offset_ry = 0.0, 0.0
     if event == "move":
-        offset_px, offset_py = calc_pixel(offset_x, offset_y)
+        # move 传增量——eyes handler 内部累积
+        offset_rx, offset_ry = offset_x, offset_y
 
     from src.core.world_instance.handlers.event_type_handler import generate_events
-    events = generate_events(eid, cfg, event, offset_px, offset_py, base_px, base_py, size_px)
+    events = generate_events(eid, cfg, event, offset_rx, offset_ry, base_rx, base_ry, size_r)
 
     if not events:
         return

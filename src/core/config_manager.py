@@ -1,7 +1,7 @@
 """ConfigManager — 持久化配置管理"""
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from src.utils.logger import log
 
 
@@ -14,9 +14,11 @@ class AppConfig:
     scrcpy_max_fps: int = 120      # 中间件推流帧率
     scrcpy_bit_rate: str = "16000"
     render_max_fps: int = 120
+    touch_consume_freq: int = 800     # SS 触控消费频率 Hz
     log_middleware_stdout: bool = False  # 记录中间件 stdout 到日志文件
     keep_service_alive: bool = False     # 常驻服务
     mapping_path: str = ""              # 触控映射 JSON 路径
+    device_profiles: dict = field(default_factory=dict)  # {adb_serial: com_port} 跨会话设备绑定记忆
 
 
 _CONFIG_DIR = os.path.join("resources", "config")

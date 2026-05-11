@@ -5,8 +5,8 @@
 from src.core.world_instance.components.touch_input import TouchInput
 
 
-def generate(entity_id: int, cfg, event: str, ox: int, oy: int, bx: int, by: int, sz: int) -> list[TouchInput]:
-    """CLICK: press → [down, up]"""
+def generate(entity_id: int, cfg, event: str, ox: float, oy: float, bx: float, by: float, sz: float) -> list[TouchInput]:
+    """CLICK: press → [down, up]（比例值）"""
     if event == "press":
         return [
             TouchInput(base_x=bx, base_y=by, x=bx, y=by, event_type="down", key_id=cfg.key_id, size=sz),

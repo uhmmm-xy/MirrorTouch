@@ -24,19 +24,10 @@ _ser = None
 _debug_listeners: list = []
 _debug_queue: queue.Queue = queue.Queue(maxsize=100)
 
-# ── 屏幕分辨率（供边界校验，由 ADB 写入）──
-_screen_w: int = 1080
-_screen_h: int = 1920
-
 
 def register():
     esper.set_handler("serial.start", _on_start)
     esper.set_handler("serial.stop", _on_stop)
-
-
-def set_screen_size(w: int, h: int):
-    global _screen_w, _screen_h
-    _screen_w, _screen_h = w, h
 
 
 def register_debug_listener(listener: callable):
@@ -58,11 +49,21 @@ def _on_start(control_q: queue.Queue, update_q: queue.Queue, port: str, baudrate
     _control_queue = control_q
     _update_queue = update_q
     _running = True
+
+    # [MIRROR-TOUCH-T3] 串口连接成功后自动下发 Opcode 0 初始化包
+    _send_init_packet()
+
     _thread = threading.Thread(
         target=_run, args=(frequency,), daemon=True, name="SerialSystem"
     )
     _thread.start()
     log.info(f"[Serial] 线程启动 {port}@{baudrate} {frequency}Hz")
+
+
+def _serial_write(data: bytes):
+    """写串口（调试完成，不输出日志）"""
+    if _ser and _ser.is_open:
+        _ser.write(data)
 
 
 def _on_stop():
@@ -71,9 +72,14 @@ def _on_stop():
     _running = False
     if _thread and _thread.is_alive():
         _thread.join(timeout=3)
+    # 停机后清空残留队列，防止下次启动残留数据
+    _drain_remaining()
     from src.core.world_instance.handlers.serial_connect_handler import handle_disconnect
     handle_disconnect(_ser)
     _ser = None
+    # 清空队列引用
+    _control_queue = None
+    _update_queue = None
     log.info("[Serial] 线程停止")
 
 
@@ -123,27 +129,21 @@ def _drain_remaining():
 def _process_control(item):
     """处理控制帧 down/up"""
     from src.core.world_instance.handlers.safety_verify_handler import is_ok
-    from src.core.world_instance.handlers.protocol_pack_handler import pack_d, pack_u
+    from src.core.world_instance.handlers.protocol_pack_handler import pack_down, pack_up
 
     if not is_ok(_ser):
         return
 
     if item.event_type == "down":
-        # 拟人偏移
-        fx, fy = _hum_offset(item.base_x, item.base_y)
-        # 边界校验
-        fx, fy = _boundary_check(item.base_x, item.base_y, fx, fy, item.size)
-        # 打包发送
-        _ser.write(pack_u(_get_fid(item.key_id)))
-        _ser.write(pack_d(_get_fid(item.key_id), fx, fy))
-        # 回调 TQS
+        fx, fy = item.base_x, item.base_y
+        _serial_write(pack_up(_get_fid(item.key_id)))
+        _serial_write(pack_down(_get_fid(item.key_id), fx, fy))
         _mark_tqs(item.key_id, "down")
-        # 调试回传
         _debug_emit(_get_fid(item.key_id), "down", fx, fy)
-        log.info(f"[Serial] down: key={item.key_id} fid={_get_fid(item.key_id)} ({fx},{fy})")
+        log.info(f"[Serial] down: key={item.key_id} fid={_get_fid(item.key_id)} r=({fx:.4f},{fy:.4f})")
 
     elif item.event_type == "up":
-        _ser.write(pack_u(_get_fid(item.key_id)))
+        _serial_write(pack_up(_get_fid(item.key_id)))
         _mark_tqs(item.key_id, "up")
         _debug_emit(_get_fid(item.key_id), "up", 0, 0)
         log.info(f"[Serial] up: key={item.key_id} fid={_get_fid(item.key_id)}")
@@ -152,7 +152,7 @@ def _process_control(item):
 def _process_frames(fid: int):
     """处理窗口帧 move 批次"""
     from src.core.world_instance.handlers.safety_verify_handler import is_ok
-    from src.core.world_instance.handlers.protocol_pack_handler import pack_s
+    from src.core.world_instance.handlers.protocol_pack_handler import pack_move
 
     if not is_ok(_ser) or fid < 0 or fid > 5:
         return
@@ -168,13 +168,12 @@ def _process_frames(fid: int):
     if not frames:
         return
 
-    # 逐帧拟人平滑 + 边界校验 + 打包
+    # 逐帧（屏蔽拟人，直接发送原始坐标）+ 边界校验 + 打包
     for i, ti in enumerate(frames):
-        base_x, base_y = ti.base_x, ti.base_y
-        fx, fy = _hum_smooth(fid, base_x, base_y)
-        fx, fy = _boundary_check(base_x, base_y, fx, fy, ti.size)
-        log.info(f"[Serial] move: fid={fid} frame={i} hum=({fx},{fy})")
-        _ser.write(pack_s(fid, fx, fy))
+        fx, fy = ti.x, ti.y
+        fx, fy = _boundary_check(ti.base_x, ti.base_y, fx, fy, ti.size)
+        log.info(f"[Serial] move: fid={fid} frame={i} r=({fx:.4f},{fy:.4f})")
+        _serial_write(pack_move(fid, fx, fy))
         _debug_emit(fid, "move", fx, fy)
 
 
@@ -192,23 +191,22 @@ def _hum_smooth(fid: int, x: int, y: int) -> tuple:
 
 # ── 边界校验 ──
 
-def _boundary_check(base_x: int, base_y: int, x: int, y: int, size: int) -> tuple[int, int]:
-    """双重校验:
-    1) 欧氏距离 > size 半径 → 投影至圆边缘
-    2) 钳制至屏幕范围
+def _boundary_check(base_x: float, base_y: float, x: float, y: float, size: float) -> tuple[float, float]:
+    """比例空间边界校验：
+    1) 欧氏距离 > size → 投影至圆边缘
+    2) 钳制至 [0, 1]
     """
     if size <= 0:
-        size = 40
+        size = 0.02
     dx = x - base_x
     dy = y - base_y
     dist = math.sqrt(dx * dx + dy * dy)
     if dist > size and dist > 0:
         ratio = size / dist
-        x = int(base_x + dx * ratio)
-        y = int(base_y + dy * ratio)
-    # 钳制屏幕
-    x = max(0, min(_screen_w, x))
-    y = max(0, min(_screen_h, y))
+        x = base_x + dx * ratio
+        y = base_y + dy * ratio
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
     return x, y
 
 
@@ -227,17 +225,15 @@ def _mark_tqs(key_id: str, event_type: str):
 
 # ── 调试回传 ──
 
-def _debug_emit(fid: int, event_type: str, final_x: int, final_y: int):
+def _debug_emit(fid: int, event_type: str, final_x: float, final_y: float):
     """构造调试字典 → _debug_queue"""
     if not _debug_listeners:
         return
     data = {
         "fid": fid,
         "event_type": event_type,
-        "final_x": final_x,
-        "final_y": final_y,
-        "ratio_x": final_x / max(1, _screen_w),
-        "ratio_y": final_y / max(1, _screen_h),
+        "ratio_x": final_x,
+        "ratio_y": final_y,
         "timestamp": time.time(),
     }
     try:
@@ -257,3 +253,32 @@ def _emergency_stop(reason: str = ""):
         handle_disconnect(_ser)
     log.info(f"[Serial] 紧急停机: {reason}")
     esper.dispatch_event("touch.error", f"SerialSystem: {reason}")
+
+
+# ── [MIRROR-TOUCH-T3] Opcode 0 初始化下发 ──
+
+def _send_init_packet():
+    """串口连接成功后，从 DeviceComponent 读取 base_w/base_h，发送 Opcode 0 初始化包。
+
+    仅 is_ready==True 时发送；通过 esper 读取，不依赖 UI 或全局变量。
+    """
+    try:
+        from src.core.world_instance.handlers.protocol_pack_handler import pack_set_size
+        from src.core.world_instance.world_bootstrap import get_device_meta_entity
+        from src.core.world_instance.components.device_component import DeviceComponent
+
+        ent = get_device_meta_entity()
+        if ent == 0 or not esper.entity_exists(ent):
+            log.warning("[Serial] DeviceComponent 实体不存在，跳过 SET_SIZE")
+            return
+        dc = esper.component_for_entity(ent, DeviceComponent)
+        if not dc.is_ready:
+            log.warning("[Serial] DeviceComponent 未就绪，跳过 SET_SIZE")
+            return
+
+        w, h = dc.base_w, dc.base_h
+        data = pack_set_size()
+        _serial_write(data)
+        log.info("[Serial] SET_SIZE 初始化包已发送: 32767×32767")
+    except Exception as e:
+        log.warning(f"[Serial] SET_SIZE 发送失败: {e}")

@@ -7,8 +7,8 @@ from src.core.world_instance.components.widget_config import WidgetConfig
 
 
 def generate_events(entity_id: int, cfg: WidgetConfig,
-                    event: str, offset_px: int = 0, offset_py: int = 0,
-                    base_px: int = 0, base_py: int = 0, size_px: int = 0,
+                    event: str, offset_x: float = 0.0, offset_y: float = 0.0,
+                    base_x: float = 0.0, base_y: float = 0.0, size: float = 0.03,
                     ):
     """Entity → Handler 分发
 
@@ -16,7 +16,7 @@ def generate_events(entity_id: int, cfg: WidgetConfig,
     """
     handler = _HANDLERS.get(cfg.widget_type)
     if handler:
-        return handler(entity_id, cfg, event, offset_px, offset_py, base_px, base_py, size_px)
+        return handler(entity_id, cfg, event, offset_x, offset_y, base_x, base_y, size)
     return []
 
 

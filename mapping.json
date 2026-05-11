@@ -4,8 +4,8 @@
   "height": 488,
   "mouseMoveMap": {
     "startPos": {
-      "x": 0.7455,
-      "y": 0.4357
+      "x": 0.7444196428571429,
+      "y": 0.4333101580796253
     },
     "speedRatioX": 1.0,
     "speedRatioY": 1.0
@@ -16,12 +16,12 @@
       "comment": "摇杆",
       "switch_map": false,
       "widget_type": "joystick",
-      "pos_x": 0.1727,
-      "pos_y": 0.5823,
+      "pos_x": 0.1718,
+      "pos_y": 0.5815,
       "scale_size": 0.1043,
-      "turbo_key": "",
+      "turbo_key": "Shift",
       "turbo_offset": 0.7951,
-      "creep_key": "",
+      "creep_key": "Control",
       "creep_offset": 0.6324
     },
     {
@@ -42,8 +42,8 @@
       "comment": "视角",
       "switch_map": false,
       "widget_type": "eyes",
-      "pos_x": 0.7455,
-      "pos_y": 0.4357,
+      "pos_x": 0.7444196428571429,
+      "pos_y": 0.4333101580796253,
       "scale_size": 0.2186,
       "turbo_key": "",
       "turbo_offset": 0.0,
@@ -68,8 +68,8 @@
       "comment": "新控件",
       "switch_map": false,
       "widget_type": "click",
-      "pos_x": 0.1484,
-      "pos_y": 0.8069,
+      "pos_x": 0.1462,
+      "pos_y": 0.8038,
       "scale_size": 0.019,
       "turbo_key": "",
       "turbo_offset": 0.0,
@@ -103,12 +103,12 @@
       "creep_offset": 0.0
     },
     {
-      "key": "4",
+      "key": "3",
       "comment": "新控件",
       "switch_map": false,
       "widget_type": "click",
-      "pos_x": 0.1917,
-      "pos_y": 0.9106,
+      "pos_x": 0.1908,
+      "pos_y": 0.91,
       "scale_size": 0.019,
       "turbo_key": "",
       "turbo_offset": 0.0,

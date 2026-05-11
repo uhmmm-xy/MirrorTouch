@@ -24,20 +24,6 @@ def handle_start(config, output_queue: queue.Queue):
     esper.dispatch_event("serial.start", control_q, update_q, port, baudrate, freq)
     esper.dispatch_event("queue.start", output_queue, control_q, update_q)
 
-    # ADB 真实分辨率 → 写入 TouchConfig 和 SerialSystem
-    try:
-        from src.core.config_manager import load_config
-        from src.core.world_instance.handlers.adb_handler import get_screen_size
-        cfg2 = load_config()
-        w, h = get_screen_size(cfg2.adb_path)
-        from src.core.world_instance.handlers.coordinate_calc_handler import set_screen_size
-        set_screen_size(w, h)
-        from src.core.world_instance.serial_system import set_screen_size as serial_set_size
-        serial_set_size(w, h)
-        log.info(f"[SessionControl] ADB 分辨率: {w}x{h}")
-    except Exception as e:
-        log.warning(f"[SessionControl] ADB 分辨率获取失败, 使用默认: {e}")
-
     log.info(f"[SessionControl] 触控启动 {port}@{baudrate} {freq}Hz")
 
 

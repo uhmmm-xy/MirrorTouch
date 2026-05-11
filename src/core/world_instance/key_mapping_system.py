@@ -17,6 +17,9 @@ from src.utils.logger import log
 _output_queue: queue.Queue | None = None
 # 活跃标志
 _running: bool = False
+# 映射画布尺寸（加载 mapping.json 时赋值）
+_map_width: int = 0
+_map_height: int = 0
 
 
 def register():
@@ -72,6 +75,7 @@ def _on_input(hotkey: str, event: str, x: float = 0.0, y: float = 0.0):
 
 def _load_entities():
     """从 mapping.json 创建 Esper Entity，每种按键类型调用对应 create_xxx_entity()"""
+    global _map_width, _map_height
     from src.core.config_manager import load_config
     from src.core.world_instance.components.widget_config import WidgetConfig
 
@@ -82,6 +86,10 @@ def _load_entities():
         return
     with open(mapping_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    # [MIRROR-TOUCH-T2] 存储映射画布尺寸供坐标转换使用
+    _map_width = int(data.get("width", 1080))
+    _map_height = int(data.get("height", 1920))
 
     type_to_creator = {
         "click":    _create_button,

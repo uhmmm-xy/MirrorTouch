@@ -6,7 +6,11 @@
   "scrcpy_max_fps": 120,
   "scrcpy_bit_rate": "16000",
   "render_max_fps": 90,
+  "touch_consume_freq": 200,
   "log_middleware_stdout": false,
   "keep_service_alive": false,
-  "mapping_path": "E:/project/MirrorTouch/mapping.json"
+  "mapping_path": "E:/project/MirrorTouch/mapping.json",
+  "device_profiles": {
+    "77fec978": "COM3"
+  }
 }

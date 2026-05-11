@@ -82,12 +82,16 @@ def _drain_frame():
     if frame.size <= 0 or frame.width <= 0 or frame.height <= 0:
         return
 
-    # 分辨率变更 → 触发触控模块全量停机
+    # 分辨率变更 → 触发触控模块全量停机 + 更新 DeviceComponent 旋转角度
     if _last_width > 0 and _last_height > 0:
         if _last_width != frame.width or _last_height != frame.height:
             log.warning(f"[FrameDrain] 分辨率变更: {_last_width}x{_last_height} → {frame.width}x{frame.height}, 触发触控熔断")
             _last_width = frame.width
             _last_height = frame.height
+
+            # [MIRROR-TOUCH-T2] 分辨率变化时更新 DeviceComponent 旋转角度
+            _update_device_rotation()
+
             # 触发全量停机
             esper.dispatch_event("touch.stop")
             return
@@ -141,3 +145,32 @@ def _drain_frame():
             log.info(f"[FrameDrain] 帧 #{_frame_count} {frame.width}x{frame.height}")
     except Exception as e:
         log.warning(f"[FrameDrain] 写入 World 失败: {e}")
+
+
+def _update_device_rotation():
+    """[MIRROR-TOUCH-T2] 投屏分辨率变化时，通过 ADB 重新查询旋转角度并更新 DeviceComponent"""
+    try:
+        from src.core.config_manager import load_config
+        from src.core.world_instance.world_bootstrap import get_device_meta_entity
+        from src.core.world_instance.components.device_component import DeviceComponent
+        from src.core.world_instance.handlers.adb_handler import query_rotation
+
+        cfg = load_config()
+        ent = get_device_meta_entity()
+        if ent == 0 or not esper.entity_exists(ent):
+            return
+        dc = esper.component_for_entity(ent, DeviceComponent)
+
+        # 尝试获取设备 serial
+        serial = dc.adb_serial
+        if not serial:
+            from src.core.world_instance.world_bootstrap import get_current_device
+            from src.core.world_instance.components.device_config import DeviceConfig as DevCfgComp
+            dev_ent = get_current_device()
+            if dev_ent and esper.entity_exists(dev_ent) and esper.has_component(dev_ent, DevCfgComp):
+                serial = esper.component_for_entity(dev_ent, DevCfgComp).serial
+
+        dc.current_rotation = query_rotation(cfg.adb_path, serial)
+        log.info(f"[FrameDrain] DeviceComponent 旋转角度更新: {dc.current_rotation}°")
+    except Exception as e:
+        log.warning(f"[FrameDrain] 旋转角度更新失败: {e}")
