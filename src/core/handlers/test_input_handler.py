@@ -247,20 +247,10 @@ class TestInputHandler(BaseHandler):
         return self._active_radial
 
 
-def _dispatch_touch(key_str: str, event: str, screen):
-    """测试模式按键 → 触控引擎"""
-    try:
-        import esper
-        from src.core.world_instance.handlers.coordinate_calc_handler import calc_pixel
-        widget = None
-        for child in screen.children:
-            if child.data and child.data.key == key_str:
-                widget = child
-                break
-        if not widget or not widget.data:
-            return
-        rx, ry = widget.data.pos_x, widget.data.pos_y
-        px, py = calc_pixel(rx, ry)
-        esper.dispatch_event("touch.input", key_str, event, px, py)
-    except Exception:
-        pass
+def _dispatch_touch(key_str: str, event: str, screen=None):
+    """[MIRROR-TOUCH-T2] 测试模式按键 → 触控引擎
+
+    不查映射，映射关系由 KMS 的 InputCaptureHandler 统一处理。
+    """
+    import esper
+    esper.dispatch_event("touch.input", key_str, event, 0, 0)

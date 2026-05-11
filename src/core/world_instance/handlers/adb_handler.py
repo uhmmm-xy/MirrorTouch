@@ -25,7 +25,7 @@ def _on_start(device_entity: int):
 
     # ADB forward
     ret = subprocess.run([adb, "forward", f"tcp:{dc.local_port}", f"tcp:{dc.local_port}"],
-                         capture_output=True, text=True)
+                         capture_output=True, encoding="utf-8", errors="replace")
     if ret.returncode == 0:
         log.info(f"[AdbHandler] 端口转发: {dc.serial} → tcp:{dc.local_port}")
     else:
@@ -46,7 +46,8 @@ def _on_stop(device_entity: int):
 
 def detect_device(adb_path: str) -> str:
     try:
-        ret = subprocess.run([adb_path, "devices"], capture_output=True, text=True, timeout=5)
+        ret = subprocess.run([adb_path, "devices"], capture_output=True,
+                            encoding="utf-8", errors="replace", timeout=5)
         for line in ret.stdout.strip().split("\n")[1:]:
             if "\tdevice" in line:
                 serial = line.split("\t")[0].strip()
@@ -64,7 +65,8 @@ def get_screen_size(adb_path: str, serial: str = "") -> tuple[int, int]:
         cmd += ["-s", serial]
     cmd += ["shell", "wm", "size"]
     try:
-        ret = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        ret = subprocess.run(cmd, capture_output=True,
+                            encoding="utf-8", errors="replace", timeout=5)
         for line in ret.stdout.strip().split("\n"):
             if "Override size:" in line:
                 line = line.split("Override size:")[-1]

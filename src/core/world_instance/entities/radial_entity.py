@@ -1,10 +1,9 @@
-"""RadialEntity — 转盘（按键激活后方向选择持续 move）"""
+"""RadialEntity — 转盘实体（RADIAL 类型：按键激活后方向选择持续 move）"""
 import esper
-from src.core.world_instance.components.touch_input import TouchInput
+from src.core.world_instance.components.widget_config import WidgetConfig
 
 
-def create_radial_entity(hotkey: str, screen_x: int, screen_y: int,
-                         size: int = 60, sectors: int = 8) -> int:
+def create_radial_entity(cfg: WidgetConfig) -> int:
     e = esper.create_entity()
-    esper.add_component(e, TouchInput(key_id=hotkey))
+    esper.add_component(e, cfg)
     return e

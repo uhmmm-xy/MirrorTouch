@@ -82,9 +82,17 @@ def _drain_frame():
     if frame.size <= 0 or frame.width <= 0 or frame.height <= 0:
         return
 
-    # 分辨率变更日志
-    if _last_width != frame.width or _last_height != frame.height:
-        log.info(f"[FrameDrain] 分辨率变更: {_last_width}x{_last_height} → {frame.width}x{frame.height}")
+    # 分辨率变更 → 触发触控模块全量停机
+    if _last_width > 0 and _last_height > 0:
+        if _last_width != frame.width or _last_height != frame.height:
+            log.warning(f"[FrameDrain] 分辨率变更: {_last_width}x{_last_height} → {frame.width}x{frame.height}, 触发触控熔断")
+            _last_width = frame.width
+            _last_height = frame.height
+            # 触发全量停机
+            esper.dispatch_event("touch.stop")
+            return
+
+    if _last_width == 0 or _last_height == 0:
         _last_width = frame.width
         _last_height = frame.height
 

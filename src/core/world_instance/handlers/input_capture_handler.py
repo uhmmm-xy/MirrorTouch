@@ -1,40 +1,51 @@
-"""InputCaptureHandler — 接收 UI 按键事件，匹配映射，计算坐标"""
-import esper
-from src.core.world_instance.components.touch_input import TouchInput
-from src.utils.logger import log
+"""InputCaptureHandler — 接收 UI 按键事件，匹配映射，计算坐标，生成 TouchInput 序列
+
+[MIRROR-TOUCH-T2] UI 信息交换层：
+  1. kms.find_entity_id(hotkey) → Esper Entity ID
+  2. esper.component_for_entity(eid, WidgetConfig) → cfg
+  3. calc_pixel → base/offset 像素
+  4. event_type_handler.generate_events(entity_id, cfg, ...) → TouchInput 序列（所有字段自完备）
+  5. 全部推入 KMS._output_queue
+"""
 from src.utils.logger import log
 
 
-def handle_input(hotkey: str, event: str, x: int = 0, y: int = 0):
+def handle_input(hotkey: str, event: str, offset_x: float = 0.0, offset_y: float = 0.0):
     """UI 按键事件入口
-    event: 'press' | 'release' | 'move'
-    x, y: 屏幕像素坐标（由 UI 层预计算或在此转换）
+
+    Args:
+        hotkey:    按键标识
+        event:     'press' | 'release' | 'move'
+        offset_x/y: 鼠标增量比例 (move), press/release 传 0
     """
     import src.core.world_instance.key_mapping_system as kms
-    if not kms._running or kms._direct_queue is None:
+    import esper
+    from src.core.world_instance.components.widget_config import WidgetConfig
+
+    eid = kms.find_entity_id(hotkey)
+    if eid == 0 or not esper.entity_exists(eid):
+        log.warning(f"[InputCapture] 未找到实体: {hotkey}")
         return
 
-    # 查找映射
-    route = kms._route_map.get(hotkey)
+    cfg = esper.component_for_entity(eid, WidgetConfig)
 
-    if event == 'press':
-        if route is None:
-            from src.core.world_instance.handlers.finger_assign_handler import assign
-            fid = assign()
-            kms._route_map[hotkey] = {"finger_id": fid}
-            log.info(f"[KMS] down fid={fid} key={hotkey} ({x},{y})")
-        ti = TouchInput(x=x, y=y, event_type="down", key_id=hotkey)
-        kms._direct_queue.put(ti)
+    from src.core.world_instance.handlers.coordinate_calc_handler import calc_pixel
+    base_px, base_py = calc_pixel(cfg.pos_x, cfg.pos_y)
+    size_px = int(cfg.scale_size * max(base_px + base_py, 100))
 
-    elif event == 'release':
-        if route is not None:
-            ti = TouchInput(x=0, y=0, event_type="up", key_id=hotkey)
-            kms._direct_queue.put(ti)
-            from src.core.world_instance.handlers.finger_release_handler import release
-            release(route["finger_id"])
-            del kms._route_map[hotkey]
+    offset_px, offset_py = 0, 0
+    if event == "move":
+        offset_px, offset_py = calc_pixel(offset_x, offset_y)
 
-    elif event == 'move':
-        if route is not None:
-            ti = TouchInput(x=x, y=y, event_type="move", key_id=hotkey)
-            kms._input_queue.put(ti)
+    from src.core.world_instance.handlers.event_type_handler import generate_events
+    events = generate_events(eid, cfg, event, offset_px, offset_py, base_px, base_py, size_px)
+
+    if not events:
+        return
+
+    output_q = kms._output_queue
+    if output_q is None:
+        log.error("[InputCapture] output_queue 未初始化")
+        return
+    for ti in events:
+        output_q.put(ti)

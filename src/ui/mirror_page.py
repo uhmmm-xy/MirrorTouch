@@ -1,8 +1,8 @@
 """MirrorPage — 投屏页面：启动/停止 + 视频帧渲染"""
 import esper
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPainter, QPixmap, QColor, QFont
+from PyQt5.QtGui import QMouseEvent, QPainter, QPixmap, QColor, QFont
 from qfluentwidgets import PushButton
 from src.utils.logger import log
 from src.core.world_instance.world_bootstrap import get_current_session, get_current_device
@@ -38,24 +38,13 @@ def qt_key_to_str(qt_key: int) -> str:
     """将 Qt.Key_XXX 转为字符串（与 PropertyPanel raw_key 格式一致）"""
     return _QT_KEY_MAP.get(qt_key, "")
 
-def _qt_key_str(event) -> str:
-    """Qt 事件 → 按键字符串"""
-    t = event.text()
-    if t:
-        return t
-    return _QT_KEY_MAP.get(event.key(), "")
 
+def _dispatch_touch(key_str: str, event: str, offset_x: float = 0.0, offset_y: float = 0.0):
+    """转发 UI 按键事件到 KeyMappingSystem — 纯转发，不查映射
 
-def _dispatch_touch(key_str: str, event: str, mapping_data: dict):
-    try:
-        from src.core.world_instance.handlers.coordinate_calc_handler import calc_pixel
-        for w in mapping_data.get("widgets", []):
-            if w.get("key") == key_str:
-                px, py = calc_pixel(w.get("pos_x", 0), w.get("pos_y", 0))
-                esper.dispatch_event("touch.input", key_str, event, px, py)
-                break
-    except Exception:
-        pass
+    offset_x/offset_y: 鼠标增量比例 (move)，press/release 传 (0,0)
+    """
+    esper.dispatch_event("touch.input", key_str, event, offset_x, offset_y)
 
 
 class MirrorPage(QWidget):
@@ -65,11 +54,14 @@ class MirrorPage(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self._streaming = False
         self._touch_active = False
-        self._mapping_data = None
         self._render_timer = QTimer(self)
+        self.setMouseTracking(True)
         self._render_timer.timeout.connect(self._render_frame)
         self._render_timer.setInterval(16)
+        self._touch_count = 0
         self._setup_ui()
+        # [T7] 注册触控异常事件监听
+        esper.set_handler("touch.error", self._on_touch_error)
 
     def _load_eyes_key(self) -> str:
         cfg = load_config()
@@ -147,21 +139,7 @@ class MirrorPage(QWidget):
     def _activate_touch(self):
         """Eyes key 激活触控 + 鼠标锁定"""
         from src.core.world_instance.components.touch_config import TouchConfig
-        import json as _json
         cfg = load_config()
-        # if not cfg.mapping_path:
-        #     return
-        # try:
-        #     with open(cfg.mapping_path, 'r', encoding='utf-8') as f:
-        #         self._mapping_data = _json.load(f)
-        #     widgets = self._mapping_data.get("widgets", [])
-        #     self._eyes_key = ""
-        #     for w in widgets:
-        #         if w.get("widget_type") == "eyes":
-        #             self._eyes_key = w.get("key", "")
-        #             break
-        # except Exception:
-        #     return
         tc = TouchConfig(port=cfg.serial_port, baudrate=cfg.serial_baud)
         esper.dispatch_event("touch.start", tc)
         self._touch_active = True
@@ -172,9 +150,27 @@ class MirrorPage(QWidget):
     def _deactivate_touch(self):
         esper.dispatch_event("touch.stop")
         self._touch_active = False
-        self._mapping_data = None
         self._unlock_mouse()
         log.info("[MirrorPage] 触控已停用")
+
+    # ── [T7] 异常错误处理 ──
+
+    def _on_touch_error(self, error_msg: str = ""):
+        """[T7] 触控系统异常停机回调"""
+        log.error(f"[MirrorPage] 触控异常: {error_msg}")
+        self._touch_active = False
+        self._unlock_mouse()
+        self.label_status.setText(f"异常停机")
+        self.label_status.setStyleSheet("color: #e74c3c; font-size: 13px;")
+        # 弹窗提示
+        QMessageBox.critical(
+            self, "触控系统异常",
+            f"触控服务已异常停机：\n\n{error_msg}\n\n请检查串口连接和设备状态后，重新点击[启动投屏]按钮。",
+            QMessageBox.Ok
+        )
+        # 恢复按钮，允许手动重启
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
 
     def _lock_mouse(self):
         from PyQt5.QtGui import QCursor
@@ -190,26 +186,44 @@ class MirrorPage(QWidget):
             self._lock_timer.stop()
 
     def keyPressEvent(self, event):
-        # print(f"KeyPress: {event.key()} text='{event.text()}'")
-        # print(f"KeyPress text: '{self._eyes_key}'")
-        # print(f"Touch active: {self._touch_active}")
-    
         t = event.text()
-        # print(f"KeyPress text: '{t}'")
         if t and t == self._eyes_key:
-                if not self._touch_active:
-                    self._activate_touch()
-                else:
-                    self._deactivate_touch()
-        super().keyPressEvent(event)
+            if not self._touch_active:
+                self._activate_touch()
+                _dispatch_touch(t, "press")
+            else:
+                _dispatch_touch(t, "up")
+                self._deactivate_touch()
+            return
+        if self._touch_active and t:
+            _dispatch_touch(t, "press")
 
     def keyReleaseEvent(self, event):
+        t = event.text()
+        if not self._touch_active or t == self._eyes_key:
+            return
+        if t:
+            _dispatch_touch(t, "release")
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """[MIRROR-TOUCH-EYES] 鼠标移动增量 → Eyes 触控注入"""
+        
         if not self._touch_active:
             return
-        t = event.text()
-        if t and t != self._eyes_key:
-            # _dispatch_touch(t, "release", self._mapping_data)
-            super().keyReleaseEvent(event)
+        vw, vh = self.width(), self.height()
+        if vw <= 0 or vh <= 0:
+            return
+        if hasattr(self, '_frame_w') and self._frame_w > 0:
+            ratio = self._frame_w / max(1, self._frame_h)
+            dst_w = min(vw, int(vh * ratio))
+            dst_h = min(vh, int(vw / ratio))
+        else:
+            dst_w, dst_h = vw, vh
+        # 增量 = 鼠标位置相对窗口中心的偏移 → 比例
+        cx, cy = self.rect().center().x(), self.rect().center().y()
+        dx = (event.pos().x() - cx) / max(1, dst_w)
+        dy = (event.pos().y() - cy) / max(1, dst_h)
+        _dispatch_touch(self._eyes_key, "move", dx, dy)
 
     # ── 帧渲染 ──
 
@@ -257,6 +271,7 @@ class VideoView(QLabel):
         self._pixmap: QPixmap | None = None
         self._frame_w: int = 0
         self._frame_h: int = 0
+        self.setMouseTracking(True)
         self.setMinimumSize(240, 180)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("""
@@ -270,9 +285,19 @@ class VideoView(QLabel):
         """)
 
     def set_frame(self, pixmap: QPixmap):
+        # [MIRROR-TOUCH-T5] 分辨率变化检测：帧尺寸改变时触发触控系统熔断停机
+        new_w, new_h = pixmap.width(), pixmap.height()
+        if hasattr(self, '_frame_w') and hasattr(self, '_frame_h'):
+            if (new_w != self._frame_w or new_h != self._frame_h) and self._frame_w > 0:
+                from src.utils.logger import log
+                log.warning(f"[MirrorPage] 分辨率变化: {self._frame_w}x{self._frame_h} → {new_w}x{new_h}，触发触控熔断")
+                # 触发触控系统停机
+                parent = self.parent()
+                if isinstance(parent, MirrorPage) and parent._touch_active:
+                    parent._deactivate_touch()
         self._pixmap = pixmap
-        self._frame_w = pixmap.width()
-        self._frame_h = pixmap.height()
+        self._frame_w = new_w
+        self._frame_h = new_h
         self.update()
 
     def paintEvent(self, event):
@@ -298,3 +323,6 @@ class VideoView(QLabel):
             painter.setFont(font)
             painter.drawText(self.rect(), Qt.AlignCenter, "...")
             painter.end()
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        super().mouseMoveEvent(event)

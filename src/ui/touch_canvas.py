@@ -80,6 +80,7 @@ class TouchCanvas(QWidget):
     # ── 鼠标事件 → 转发给 Handler 链 ──
 
     def mousePressEvent(self, event: QMouseEvent):
+        print(f"Mouse press at {event.pos().x()},{event.pos().y()}")  # 调试输出
         screen = self._page.screen
         screen.process_mouse_press(event.pos(), event.button())
 
@@ -91,6 +92,7 @@ class TouchCanvas(QWidget):
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        print(f"Mouse move at {event.pos().x()},{event.pos().y()}")  # 调试输出
         screen = self._page.screen
         if screen.test_mode:
             screen.handle_test_mouse_move()
@@ -104,6 +106,7 @@ class TouchCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        print(f"Mouse release at {event.pos().x()},{event.pos().y()}")  # 调试输出
         screen = self._page.screen
         screen.process_mouse_release(event.pos(), event.button())
 

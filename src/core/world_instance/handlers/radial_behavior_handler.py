@@ -1,6 +1,13 @@
-"""RadialBehaviorHandler — 按键激活后方向选择持续 move"""
+"""RadialBehaviorHandler — RADIAL 按键完整处理
+
+[MIRROR-TOUCH-ENTITY] generate() 是 Entity 驱动入口，event_type_handler 纯分发至此。
+"""
 from src.core.world_instance.components.touch_input import TouchInput
 
 
-def on_move(x: int, y: int) -> list[TouchInput]:
-    return [TouchInput(x=x, y=y, event_type="move")]
+def generate(entity_id: int, cfg, event: str, ox: int, oy: int, bx: int, by: int, sz: int) -> list[TouchInput]:
+    """RADIAL: move → [move(锚点+偏移)]"""
+    if event == "move":
+        px, py = bx + ox, by + oy
+        return [TouchInput(base_x=bx, base_y=by, x=px, y=py, event_type="move", key_id=cfg.key_id, size=sz)]
+    return []

@@ -1,10 +1,9 @@
-"""JoystickEntity — 摇杆（方向键持续 move）"""
+"""JoystickEntity — 摇杆实体（JOYSTICK 类型：方向键持续 move）"""
 import esper
-from src.core.world_instance.components.touch_input import TouchInput
+from src.core.world_instance.components.widget_config import WidgetConfig
 
 
-def create_joystick_entity(hotkey: str, screen_x: int, screen_y: int,
-                           size: int = 80, directions: list | None = None) -> int:
+def create_joystick_entity(cfg: WidgetConfig) -> int:
     e = esper.create_entity()
-    esper.add_component(e, TouchInput(key_id=hotkey))
+    esper.add_component(e, cfg)
     return e
