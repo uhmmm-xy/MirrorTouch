@@ -76,7 +76,6 @@ class TestInputHandler(BaseHandler):
         )
         if handled:
             screen._request_update()
-            _dispatch_touch(key_str, "press", screen)
         return handled
 
     def on_key_release(self, key_str: str,
@@ -91,7 +90,6 @@ class TestInputHandler(BaseHandler):
         )
         if handled:
             screen._request_update()
-            _dispatch_touch(key_str, "release", screen)
         return handled
 
     # ── 摇杆处理 ──
@@ -245,12 +243,3 @@ class TestInputHandler(BaseHandler):
     @property
     def active_radial(self):
         return self._active_radial
-
-
-def _dispatch_touch(key_str: str, event: str, screen=None):
-    """[MIRROR-TOUCH-T2] 测试模式按键 → 触控引擎
-
-    不查映射，映射关系由 KMS 的 InputCaptureHandler 统一处理。
-    """
-    import esper
-    esper.dispatch_event("touch.input", key_str, event, 0, 0)

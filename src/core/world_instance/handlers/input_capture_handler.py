@@ -3,8 +3,8 @@
 [MIRROR-TOUCH-T2] UI 信息交换层：
   1. kms.find_entity_id(hotkey) → Esper Entity ID
   2. esper.component_for_entity(eid, WidgetConfig) → cfg
-  3. calc_pixel → base/offset 像素
-  4. event_type_handler.generate_events(entity_id, cfg, ...) → TouchInput 序列（所有字段自完备）
+  3. press/release → 使用映射锚点
+  4. move → 传递偏移量给 widget handler（由 handler 内部累积计算）
   5. 全部推入 KMS._output_queue
 """
 from src.utils.logger import log
@@ -24,22 +24,20 @@ def handle_input(hotkey: str, event: str, offset_x: float = 0.0, offset_y: float
 
     eid = kms.find_entity_id(hotkey)
     if eid == 0 or not esper.entity_exists(eid):
-        log.warning(f"[InputCapture] 未找到实体: {hotkey}")
+        log.warning(f"[InputCapture] 未找到实体: hotkey={hotkey} event={event}")
         return
+    # log.info(f"[InputCapture] matched: hotkey={hotkey} eid={eid}")
 
     cfg = esper.component_for_entity(eid, WidgetConfig)
 
-    # [MIRROR-TOUCH-T3] 比例空间：锚点直接用映射的 ratio 值，不再截断为像素
+    # 映射锚点（比例值）—— press/release 使用
+    # move 时偏移量传递给 widget handler 做累积计算
     base_rx, base_ry = cfg.pos_x, cfg.pos_y
     size_r = cfg.scale_size
-
-    offset_rx, offset_ry = 0.0, 0.0
-    if event == "move":
-        # move 传增量——eyes handler 内部累积
-        offset_rx, offset_ry = offset_x, offset_y
+    ox, oy = (offset_x, offset_y) if event == "move" else (0.0, 0.0)
 
     from src.core.world_instance.handlers.event_type_handler import generate_events
-    events = generate_events(eid, cfg, event, offset_rx, offset_ry, base_rx, base_ry, size_r)
+    events = generate_events(eid, cfg, event, ox, oy, base_rx, base_ry, size_r)
 
     if not events:
         return

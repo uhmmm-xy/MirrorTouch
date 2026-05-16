@@ -159,32 +159,50 @@ class EyesWidget(BaseWidget, Selectable, Draggable):
         return False
 
     def _jump_to_opposite(self, cx: float, cy: float, dx: int, dy: int):
-        """跳转到对角象限随机点，通过 QCursor 移动"""
+        """弹性反弹 - 基于入射角的镜面反射"""
         half = self.size / 2
-        if dx >= 0 and dy < 0:      # Q1 → Q3
-            qx_min, qx_max = -half, 0
-            qy_min, qy_max = 0, half
-        elif dx < 0 and dy < 0:     # Q2 → Q4
-            qx_min, qx_max = 0, half
-            qy_min, qy_max = 0, half
-        elif dx < 0 and dy >= 0:    # Q3 → Q1
-            qx_min, qx_max = 0, half
-            qy_min, qy_max = -half, 0
-        else:                       # Q4 → Q2
-            qx_min, qx_max = -half, 0
-            qy_min, qy_max = -half, 0
-
-        angle = random.uniform(0, math.pi / 2)
-        target_dist = half * random.uniform(0.2, 0.8)
-        new_dx = int(qx_min + abs(math.cos(angle)) * (qx_max - qx_min))
-        new_dy = int(qy_min + abs(math.sin(angle)) * (qy_max - qy_min))
-        new_dx = clamp(new_dx, int(qx_min), int(qx_max))
-        new_dy = clamp(new_dy, int(qy_min), int(qy_max))
-
-        # 转为全局坐标移动鼠标
+        
+        import math
         from PyQt5.QtGui import QCursor
+        
         cur = QCursor.pos()
-        offset_x = new_dx - dx  # Canvas 内偏移量
+        
+        # 获取之前的运动方向（需要存储）
+        prev_dx = getattr(self, '_prev_dx', 0)
+        prev_dy = getattr(self, '_prev_dy', 0)
+        
+        # 计算运动向量
+        move_dx = dx - prev_dx if prev_dx != 0 else dx
+        move_dy = dy - prev_dy if prev_dy != 0 else dy
+        
+        # 判断主要碰撞边界并反射
+        if abs(dx) >= half * 0.95:  # 碰到左右边界
+            move_dx = -move_dx * random.uniform(0.6, 0.9)  # 反射x方向
+            # 在另一侧边界内选点
+            target_half = -dx * 0.7  # 反弹到另一侧70%位置
+            new_dx = int(target_half + random.uniform(-half*0.2, half*0.2))
+            new_dy = int(dy + move_dy * random.uniform(0.5, 1.0))
+        elif abs(dy) >= half * 0.95:  # 碰到上下边界
+            move_dy = -move_dy * random.uniform(0.6, 0.9)  # 反射y方向
+            target_half = -dy * 0.7
+            new_dy = int(target_half + random.uniform(-half*0.2, half*0.2))
+            new_dx = int(dx + move_dx * random.uniform(0.5, 1.0))
+        else:
+            # 安全回退：简单反弹
+            new_dx = -dx * random.uniform(0.5, 0.8)
+            new_dy = -dy * random.uniform(0.5, 0.8)
+        
+        # 边界安全区域
+        margin = int(half * 0.1)
+        new_dx = clamp(new_dx, int(-half) + margin, int(half) - margin)
+        new_dy = clamp(new_dy, int(-half) + margin, int(half) - margin)
+        
+        # 存储当前偏移供下次使用
+        self._prev_dx = dx
+        self._prev_dy = dy
+        
+        # 移动光标
+        offset_x = new_dx - dx
         offset_y = new_dy - dy
         QCursor.setPos(cur.x() + offset_x, cur.y() + offset_y)
 

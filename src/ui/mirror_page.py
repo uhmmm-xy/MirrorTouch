@@ -40,16 +40,14 @@ def qt_key_to_str(qt_key: int) -> str:
 
 
 def _dispatch_touch(key_str: str, event: str, offset_x: float = 0.0, offset_y: float = 0.0):
-    """转发 UI 按键事件到 KeyMappingSystem — 纯转发，不查映射
+    """转发 UI 按键/鼠标事件到 KeyMappingSystem — 纯转发，不查映射
 
     offset_x/offset_y: 鼠标增量比例 (move)，press/release 传 (0,0)
     """
-    from src.core.exceptions import MappingRatioMismatchError
     try:
         esper.dispatch_event("touch.input", key_str, event, offset_x, offset_y)
-    except MappingRatioMismatchError as e:
-        log.warning(f"[MirrorPage] 比例不匹配，事件已拦截: {e}")
-        # 不向上抛，UI 层静默拦截
+    except Exception:
+        pass
 
 
 class MirrorPage(QWidget):
@@ -64,6 +62,10 @@ class MirrorPage(QWidget):
         self._render_timer.timeout.connect(self._render_frame)
         self._render_timer.setInterval(16)
         self._touch_count = 0
+        self.dc_w = 0
+        self.dc_h = 0
+        self.pressCount = 0
+        self.releaseCount = 0
         self._setup_ui()
         # [T7] 注册触控异常事件监听
         esper.set_handler("touch.error", self._on_touch_error)
@@ -154,7 +156,6 @@ class MirrorPage(QWidget):
         esper.dispatch_event("touch.start", tc)
         self._touch_active = True
         self._lock_mouse()
-        self.setFocus()
         log.info(f"[MirrorPage] 触控已激活 eyes={self._eyes_key}")
 
     def _deactivate_touch(self):
@@ -203,8 +204,8 @@ class MirrorPage(QWidget):
             dc = esper.component_for_entity(ent, DeviceComponent)
             if result.get("error"):
                 return
-            dc.base_w = result["width"]
-            dc.base_h = result["height"]
+            self.dc_w = dc.base_w = result["width"]
+            self.dc_h = dc.base_h = result["height"]
             dc.current_rotation = result["rotation"]
 
             new_serial = result["serial"]
@@ -246,61 +247,85 @@ class MirrorPage(QWidget):
         self.btn_stop.setEnabled(False)
 
     def _lock_mouse(self):
+        """锁定鼠标：隐藏光标 + setPos 回中心（setPos 触发的事件通过 _resetting_mouse 标记过滤）"""
         from PyQt5.QtGui import QCursor
         self._lock_ctr = self.mapToGlobal(self.rect().center())
         self.setCursor(Qt.BlankCursor)
+        self._resetting_mouse = False
         self._lock_timer = QTimer(self)
-        self._lock_timer.timeout.connect(lambda: QCursor.setPos(self._lock_ctr))
+        self._lock_timer.timeout.connect(self._reset_cursor)
         self._lock_timer.start(5)
+
+    def _reset_cursor(self):
+        """重置光标到中心——设置 _resetting_mouse 标记让 mouseMoveEvent 跳过虚假事件"""
+        from PyQt5.QtGui import QCursor
+        self._resetting_mouse = True
+        QCursor.setPos(self._lock_ctr)
 
     def _unlock_mouse(self):
         self.setCursor(Qt.ArrowCursor)
         if hasattr(self, '_lock_timer'):
             self._lock_timer.stop()
 
+    def event(self, e):
+        if e.type() == e.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            self.keyPressEvent(e)
+            return True   # 消费掉，不让 Qt 继续处理焦点切换
+        return super().event(e)
+
     def keyPressEvent(self, event):
+        if event.isAutoRepeat():
+            return
         t = event.text()
+        self.pressCount += 1
+        log.info(f"[MirrorPage] keyPressEvent: {t} (Qt key={event.key()} {self.pressCount})")
         if t and t == self._eyes_key:
             if not self._touch_active:
                 self._activate_touch()
-                _dispatch_touch(t, "press")
             else:
-                _dispatch_touch(t, "up")
                 self._deactivate_touch()
             return
         if self._touch_active and t:
             _dispatch_touch(t, "press")
 
     def keyReleaseEvent(self, event):
+        if event.isAutoRepeat():
+            return
         t = event.text()
+        self.releaseCount += 1
+        log.info(f"[MirrorPage] keyReleaseEvent: {t} (Qt key={event.key()} {self.releaseCount})")
         if not self._touch_active or t == self._eyes_key:
             return
         if t:
             _dispatch_touch(t, "release")
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        """[MIRROR-TOUCH-EYES] 鼠标移动增量 → Eyes 触控注入"""
+        """鼠标移动增量 → Eyes 触控注入（跳过 setPos 触发的虚假事件）"""
         from PyQt5.QtGui import QCursor
         if not self._touch_active:
             return
-        vw, vh = self.width(), self.height()
-        if vw <= 0 or vh <= 0:
+        if getattr(self, '_resetting_mouse', False):
+            self._resetting_mouse = False
+            if hasattr(self, '_last_cursor'):
+                self._last_cursor = QCursor.pos()
             return
-        if hasattr(self, '_frame_w') and self._frame_w > 0:
-            ratio = self._frame_w / max(1, self._frame_h)
-            dst_w = min(vw, int(vh * ratio))
-            dst_h = min(vh, int(vw / ratio))
-        else:
-            dst_w, dst_h = vw, vh
-
-        # 增量 = 本次全局位置 - 上次全局位置 → 比例
         cur = QCursor.pos()
-        if not hasattr(self, '_last_cursor'):
+        if not hasattr(self, '_last_cursor') or self._last_cursor is None:
             self._last_cursor = cur
             return
         dpix = cur.x() - self._last_cursor.x()
         dpiy = cur.y() - self._last_cursor.y()
         self._last_cursor = cur
+        if dpix == 0 and dpiy == 0:
+            return
+
+        # 从 VideoView 获取视频帧渲染尺寸做比例换算基准
+        dst_w = self.dc_w #getattr(self.video_view, '_dst_w', 0)
+        dst_h = self.dc_h #getattr(self.video_view, '_dst_h', 0)
+        if dst_w <= 0:
+            dst_w = self.width()
+        if dst_h <= 0:
+            dst_h = self.height()
         dx = dpix / max(1, dst_w)
         dy = dpiy / max(1, dst_h)
         _dispatch_touch(self._eyes_key, "move", dx, dy)
@@ -398,6 +423,8 @@ class VideoView(QLabel):
                 dst_h = min(vh, int(vw / ratio))
             else:
                 dst_w, dst_h = vw, vh
+            # 存储视频帧渲染尺寸，供 mouseMoveEvent 比例换算
+            self._dst_w, self._dst_h = dst_w, dst_h
             scaled = self._pixmap.scaled(dst_w, dst_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             x = (vw - scaled.width()) // 2
             y = (vh - scaled.height()) // 2

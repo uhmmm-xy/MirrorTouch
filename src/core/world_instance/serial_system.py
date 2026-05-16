@@ -16,8 +16,6 @@ from src.utils.logger import log
 
 _running: bool = False
 _thread: threading.Thread | None = None
-_control_queue: queue.Queue | None = None   # 从 TQS 接收控制帧
-_update_queue: queue.Queue | None = None    # 从 TQS 接收 fid 消费通知(已废弃)
 _ser = None
 
 # ── 调试回传 ──
@@ -42,12 +40,10 @@ def unregister_debug_listener(listener: callable):
         _debug_listeners.remove(listener)
 
 
-def _on_start(control_q: queue.Queue, update_q: queue.Queue, port: str, baudrate: int, frequency: int):
-    global _running, _thread, _control_queue, _update_queue, _ser
+def _on_start(port: str, baudrate: int, frequency: int):
+    global _running, _thread, _ser
     from src.core.world_instance.handlers.serial_connect_handler import handle_connect
     _ser = handle_connect(port, baudrate)
-    _control_queue = control_q
-    _update_queue = update_q
     _running = True
 
     # [MIRROR-TOUCH-T3] 串口连接成功后自动下发 Opcode 0 初始化包
@@ -72,14 +68,11 @@ def _on_stop():
     _running = False
     if _thread and _thread.is_alive():
         _thread.join(timeout=3)
-    # 停机后清空残留队列，防止下次启动残留数据
+    # 停机后清空残留
     _drain_remaining()
     from src.core.world_instance.handlers.serial_connect_handler import handle_disconnect
     handle_disconnect(_ser)
     _ser = None
-    # 清空队列引用
-    _control_queue = None
-    _update_queue = None
     log.info("[Serial] 线程停止")
 
 
@@ -88,42 +81,64 @@ def _run(frequency: int):
     while _running:
         time.sleep(interval)
         try:
-            _process_control(_control_queue.get(timeout=0.001))
-        except queue.Empty:
-            pass
-        try:
-            fid = _update_queue.get(timeout=0.001)
-            _process_frames(fid)
-        except queue.Empty:
-            pass
+            _consume_all_pools()
         except Exception as e:
             log.error(f"[Serial] 消费异常: {e}")
             _emergency_stop(str(e))
             return
-
     # ── 停机：排空残帧 ──
     _drain_remaining()
 
 
+def _consume_all_pools():
+    """遍历 6 个 _frame_pool，全量取帧消费"""
+    import src.core.world_instance.touch_queue_system as tqs
+    from src.core.world_instance.handlers.queue_pop_handler import pop_all
+
+    for fid in range(6):
+        dq = tqs._frame_pool[fid]
+        frames = pop_all(dq)
+        if not frames:
+            continue
+        for ti in frames:
+            if ti.event_type in ("down", "up"):
+                _process_control(ti)
+            else:
+                _process_move(ti)
+
+
+def _process_move(ti):
+    """处理单帧 move"""
+    from src.core.world_instance.handlers.safety_verify_handler import is_ok
+    from src.core.world_instance.handlers.protocol_pack_handler import pack_move
+    if not is_ok(_ser):
+        return
+    fid = _get_fid(ti.key_id)
+    if fid < 0 or fid > 5:
+        return
+    fx, fy = _rotate_ratio(ti.x, ti.y)
+    _serial_write(pack_move(fid, fx, fy))
+    _debug_emit(fid, "move", fx, fy)
+
+
 def _drain_remaining():
-    """排空控制帧 + 窗口帧残帧"""
-    # 排空 control_queue
-    if _control_queue:
-        while not _control_queue.empty():
-            try:
-                item = _control_queue.get_nowait()
-                if hasattr(item, 'event_type'):
-                    _process_control(item)
-            except queue.Empty:
-                break
-    # 排空 update_queue → 消费残留 move 帧
-    if _update_queue:
-        while not _update_queue.empty():
-            try:
-                fid = _update_queue.get_nowait()
-                _process_frames(fid)
-            except queue.Empty:
-                break
+    """排空所有 _frame_pool 残帧"""
+    import src.core.world_instance.touch_queue_system as tqs
+    for fid in range(6):
+        dq = tqs._frame_pool[fid]
+        if not dq:
+            continue
+        frames = list(dq)
+        dq.clear()
+        for ti in frames:
+            if ti.event_type in ("down", "up"):
+                _process_control(ti)
+            else:
+                fx, fy = _rotate_ratio(ti.x, ti.y)
+                from src.core.world_instance.handlers.safety_verify_handler import is_ok
+                from src.core.world_instance.handlers.protocol_pack_handler import pack_move
+                if is_ok(_ser):
+                    _serial_write(pack_move(fid, fx, fy))
 
 
 def _process_control(item):
@@ -135,8 +150,7 @@ def _process_control(item):
         return
 
     if item.event_type == "down":
-        fx, fy = item.base_x, item.base_y
-        _serial_write(pack_up(_get_fid(item.key_id)))
+        fx, fy = _rotate_ratio(item.x, item.y)
         _serial_write(pack_down(_get_fid(item.key_id), fx, fy))
         _mark_tqs(item.key_id, "down")
         _debug_emit(_get_fid(item.key_id), "down", fx, fy)
@@ -146,35 +160,8 @@ def _process_control(item):
         _serial_write(pack_up(_get_fid(item.key_id)))
         _mark_tqs(item.key_id, "up")
         _debug_emit(_get_fid(item.key_id), "up", 0, 0)
+        # time.sleep(0.05)
         log.info(f"[Serial] up: key={item.key_id} fid={_get_fid(item.key_id)}")
-
-
-def _process_frames(fid: int):
-    """处理窗口帧 move 批次"""
-    from src.core.world_instance.handlers.safety_verify_handler import is_ok
-    from src.core.world_instance.handlers.protocol_pack_handler import pack_move
-
-    if not is_ok(_ser) or fid < 0 or fid > 5:
-        return
-
-    import src.core.world_instance.touch_queue_system as tqs
-    dq = tqs._frame_pool[fid]
-    if not dq:
-        return
-
-    # 全量取出所有帧
-    frames = list(dq)
-    dq.clear()
-    if not frames:
-        return
-
-    # 逐帧（屏蔽拟人，直接发送原始坐标）+ 边界校验 + 打包
-    for i, ti in enumerate(frames):
-        fx, fy = ti.x, ti.y
-        fx, fy = _boundary_check(ti.base_x, ti.base_y, fx, fy, ti.size)
-        log.info(f"[Serial] move: fid={fid} frame={i} r=({fx:.4f},{fy:.4f})")
-        _serial_write(pack_move(fid, fx, fy))
-        _debug_emit(fid, "move", fx, fy)
 
 
 # ── 拟人化 ──
@@ -220,7 +207,8 @@ def _get_fid(key_id: str) -> int:
 
 def _mark_tqs(key_id: str, event_type: str):
     import src.core.world_instance.touch_queue_system as tqs
-    tqs.mark_consumed(key_id, event_type)
+    if event_type == "up":
+        tqs.mark_consumed(key_id, event_type)
 
 
 # ── 调试回传 ──
@@ -282,3 +270,21 @@ def _send_init_packet():
         log.info("[Serial] SET_SIZE 初始化包已发送: 32767×32767")
     except Exception as e:
         log.warning(f"[Serial] SET_SIZE 发送失败: {e}")
+
+
+# ── [MIRROR-TOUCH-T2] 比例旋转（在打包前统一应用）──
+
+def _rotate_ratio(rx: float, ry: float) -> tuple[float, float]:
+    """按 DeviceComponent.current_rotation 旋转比例坐标"""
+    try:
+        from src.core.world_instance.world_bootstrap import get_device_meta_entity
+        from src.core.world_instance.components.device_component import DeviceComponent
+        from src.core.world_instance.handlers.ratio_validate_handler import apply_rotation
+
+        ent = get_device_meta_entity()
+        if ent == 0 or not esper.entity_exists(ent):
+            return rx, ry
+        dc = esper.component_for_entity(ent, DeviceComponent)
+        return apply_rotation(rx, ry, dc.current_rotation)
+    except Exception:
+        return rx, ry

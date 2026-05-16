@@ -12,6 +12,7 @@
 [MIRROR-TOUCH-ENTITY] generate() 是 Entity 驱动入口，event_type_handler 纯分发至此。
 """
 import random
+import time
 from src.core.world_instance.components.touch_input import TouchInput
 from src.utils.logger import log
 
@@ -45,8 +46,8 @@ def activate(key_id: str, base_x: float, base_y: float, size: float) -> TouchInp
         "base_y": base_y,
         "size": size,
         "active": True,
-        "acc_x": 0,   # 累积偏移 X
-        "acc_y": 0,   # 累积偏移 Y
+        "acc_x": dx,   # 累积偏移 = 随机偏移量（与 down 点对齐）
+        "acc_y": dy,
     }
     return TouchInput(
         base_x=base_x, base_y=base_y,
@@ -65,6 +66,10 @@ def on_move(key_id: str, offset_x: float, offset_y: float) -> list[TouchInput]:
     session = _eyes_sessions.get(key_id)
     if not session or not session["active"]:
         return []
+
+    # [DEBUG]
+    # log.info(f"[EyesWidget] on_move: key={key_id} offset=({offset_x:.6f},{offset_y:.6f}) "
+    #          f"acc_before=({session['acc_x']:.6f},{session['acc_y']:.6f})")
 
     # 预测：本次偏移后是否会触碰边界？
     base_x = session["base_x"]
@@ -85,7 +90,6 @@ def on_move(key_id: str, offset_x: float, offset_y: float) -> list[TouchInput]:
 
     px = base_x + next_acc_x
     py = base_y + next_acc_y
-
     return [TouchInput(
         base_x=base_x, base_y=base_y,
         x=px, y=py,
@@ -127,11 +131,12 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
 
     events = []
     # up
-    events.append(TouchInput(
-        base_x=base_x, base_y=base_y,
-        x=0, y=0,
-        event_type="up", key_id=key_id, size=size,
-    ))
+    # events.append(TouchInput(
+    #     base_x=base_x, base_y=base_y,
+    #     x=0, y=0,
+    #     event_type="up", key_id=key_id, size=size,
+    # ))
+    log.info(f"event time {time.time()}")
 
     # 反方向象限（与 UI EyesWidget 对齐）
     if dx >= 0 and dy < 0:          # Q1(右上) → Q3(左下)
@@ -149,12 +154,12 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
 
     import math
     angle = random.uniform(0, math.pi / 2)
-    new_dx = int(rx_min + abs(math.cos(angle)) * (rx_max - rx_min))
-    new_dy = int(ry_min + abs(math.sin(angle)) * (ry_max - ry_min))
-    new_dx = max(int(rx_min), min(int(rx_max), new_dx))
-    new_dy = max(int(ry_min), min(int(ry_max), new_dy))
-    px = max(0, int(base_x + new_dx))
-    py = max(0, int(base_y + new_dy))
+    new_dx = rx_min + abs(math.cos(angle)) * (rx_max - rx_min)
+    new_dy = ry_min + abs(math.sin(angle)) * (ry_max - ry_min)
+    new_dx = max(rx_min, min(rx_max, new_dx))
+    new_dy = max(ry_min, min(ry_max, new_dy))
+    px = max(0.0, min(1.0, base_x + new_dx))
+    py = max(0.0, min(1.0, base_y + new_dy))
 
     events.append(TouchInput(
         base_x=base_x, base_y=base_y,
@@ -164,6 +169,6 @@ def _jump_opposite(key_id: str, session: dict, dx: float, dy: float) -> list[Tou
     # 重置累积偏移为新随机点的偏移
     session["acc_x"] = new_dx
     session["acc_y"] = new_dy
-
+    log.info(f"event time {time.time()}")
     log.info(f"[EyesWidget] 边界跳转: key={key_id} ({px},{py})")
     return events

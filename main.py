@@ -75,16 +75,16 @@ class MainWindow(FluentWindow):
         shutdown_world()
         event.accept()
 
-    def keyPressEvent(self, event):
-        if event.modifiers() == Qt.AltModifier and event.key() == Qt.Key_QuoteLeft:
-            self.toggle_mouse_lock()
-        elif event.key() == Qt.Key_F12:
-            dlg = QssDebugger(self)
-            dlg.exec_()
-        else:
-            # 投屏页热键 → 触控
-            # self._forward_to_mirror(event)
-            super().keyPressEvent(event)
+    # def keyPressEvent(self, event):
+    #     if event.modifiers() == Qt.AltModifier and event.key() == Qt.Key_QuoteLeft:
+    #         self.toggle_mouse_lock()
+    #     elif event.key() == Qt.Key_F12:
+    #         dlg = QssDebugger(self)
+    #         dlg.exec_()
+    #     else:
+    #         # 投屏页热键 → 触控
+    #         # self._forward_to_mirror(event)
+    #         super().keyPressEvent(event)
 
     def _forward_to_mirror(self, event):
         if self.stackedWidget.currentWidget() is not self.mirror_page:

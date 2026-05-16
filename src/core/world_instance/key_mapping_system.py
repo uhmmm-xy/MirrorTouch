@@ -28,8 +28,47 @@ def register():
     esper.set_handler("touch.input", _on_input)
 
 
+# ========== PUBLIC API ==========
+
+def push_physical_input(hotkey: str, event: str, ratio_x: float = 0.0, ratio_y: float = 0.0):
+    """物理设备管道入口 — 纯生产者。
+
+    职责：查映射 → 生成 TouchInput → 推入统一队列。
+    不持有会话状态、锁、fid生命周期（全部在 TQS 内部管理）。
+
+    Args:
+        hotkey:  按键标识 (如 "W", "LeftButton", "\\")
+        event:   事件类型 'press' | 'release' | 'move'
+        ratio_x: 比例坐标 X (0.0~1.0), press/release 传 0
+        ratio_y: 比例坐标 Y (0.0~1.0), press/release 传 0
+    """
+    if not _running:
+        return
+    try:
+        # log.info(f"[KMS] push: key={hotkey} event={event} ratio=({ratio_x:.6f},{ratio_y:.6f})")
+        from src.core.world_instance.handlers.input_capture_handler import handle_input
+        handle_input(hotkey, event, ratio_x, ratio_y)
+    except Exception as e:
+        log.error(f"[KMS] push异常: key={hotkey} event={event} err={e}")
+        _emergency_stop(str(e))
+
+
+def _on_input(hotkey: str, event: str, offset_x: float = 0.0, offset_y: float = 0.0):
+    """UI 管道入口 — 纯转发到 input_capture_handler
+
+    offset_x/offset_y: 鼠标移动增量比例 (move), press/release 传 (0,0)
+    """
+    if not _running:
+        return
+    try:
+        from src.core.world_instance.handlers.input_capture_handler import handle_input
+        handle_input(hotkey, event, offset_x, offset_y)
+    except Exception as e:
+        log.error(f"[KMS] 异常: key={hotkey} event={event} err={e}")
+        _emergency_stop(str(e))
+
+
 def _on_start(config):
-    """加载映射 → 创建 Entity → 启动 TQS + SerialSystem"""
     global _output_queue, _running
     try:
         _load_entities()
@@ -42,13 +81,20 @@ def _on_start(config):
 
     from src.core.world_instance.handlers.session_control_handler import handle_start
     handle_start(config, _output_queue)
+
+    # ── 启动后自动激活 Eyes 组件 ──
+    _activate_eyes_session()
+
     log.info("[KMS] 已启动")
 
 
 def _on_stop():
-    """停止顺序: KMS → Serial排空 → Serial停机 → TQS停机 → KMS清理"""
+    """停止顺序: 关闭 Eyes → KMS停生产 → Serial排空 → Serial停机 → TQS停机 → KMS清理"""
     global _running, _output_queue
     _running = False  # 1. 停止生产
+
+    # 1.5 关闭 Eyes session
+    _deactivate_eyes_session()
 
     # 2. 停止 SerialSystem（先停消费、排空控制队列）
     import esper
@@ -63,12 +109,12 @@ def _on_stop():
     log.info("[KMS] 已停止")
 
 
-def _on_input(hotkey: str, event: str, x: float = 0.0, y: float = 0.0):
-    """UI 按键事件入口 → 委托 InputCaptureHandler"""
-    if not _running:
-        return
-    from src.core.world_instance.handlers.input_capture_handler import handle_input
-    handle_input(hotkey, event, x, y)
+def _emergency_stop(reason: str = ""):
+    """[T7] KMS 层异常停机：置 running=False，通知 UI"""
+    global _running
+    _running = False
+    log.info(f"[KMS] 紧急停机: {reason}")
+    esper.dispatch_event("touch.error", f"KeyMappingSystem: {reason}")
 
 
 # ── Entity 生命周期 ──
@@ -154,6 +200,43 @@ def _destroy_all_entities():
             esper.delete_entity(eid)
     if ids:
         log.info(f"[KMS] 销毁 {len(ids)} 个按键实体")
+
+
+# ── Eyes Session 生命周期 ──
+
+def _activate_eyes_session():
+    """KMS 启动时自动激活 Eyes 组件，创建 touch session。
+
+    从 Esper 查找 widget_type==eyes 的第一个实体，
+    调用 activate() 下发 down 帧，eyes key 从 WidgetConfig 读取。
+    """
+    from src.core.world_instance.components.widget_config import WidgetConfig
+    from src.core.world_instance.handlers.eyes_widget_handler import activate, is_active
+
+    for ent, (wc,) in esper.get_components(WidgetConfig):
+        if wc.widget_type == "eyes":
+            if not is_active(wc.key_id):
+                ti = activate(wc.key_id, wc.pos_x, wc.pos_y, wc.scale_size)
+                if _output_queue and ti:
+                    _output_queue.put(ti)
+                    log.info(f"[KMS] Eyes 已激活: key={wc.key_id}")
+            return
+    log.warning("[KMS] 未找到 Eyes 实体，跳过激活")
+
+
+def _deactivate_eyes_session():
+    """KMS 停止时关闭 Eyes session，下发 up 帧。"""
+    from src.core.world_instance.components.widget_config import WidgetConfig
+    from src.core.world_instance.handlers.eyes_widget_handler import deactivate, is_active
+
+    for ent, (wc,) in esper.get_components(WidgetConfig):
+        if wc.widget_type == "eyes":
+            if is_active(wc.key_id):
+                ti = deactivate(wc.key_id)
+                if _output_queue and ti:
+                    _output_queue.put(ti)
+                    log.info(f"[KMS] Eyes 已停用: key={wc.key_id}")
+            return
 
 
 # ── 查询 ──

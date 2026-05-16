@@ -9,7 +9,10 @@ def generate(entity_id: int, cfg, event: str, ox: float, oy: float, bx: float, b
     """CLICK: press → [down, up]（比例值）"""
     if event == "press":
         return [
-            TouchInput(base_x=bx, base_y=by, x=bx, y=by, event_type="down", key_id=cfg.key_id, size=sz),
-            TouchInput(base_x=bx, base_y=by, x=bx, y=by, event_type="up",   key_id=cfg.key_id, size=sz),
+            TouchInput(base_x=bx, base_y=by, x=bx, y=by, event_type="down", key_id=cfg.key_id, size=sz)
+        ]
+    elif event == "release":
+        return [
+            TouchInput(base_x=bx, base_y=by, x=bx, y=by, event_type="up", key_id=cfg.key_id, size=sz)
         ]
     return []

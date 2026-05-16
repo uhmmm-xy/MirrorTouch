@@ -48,9 +48,11 @@ def init_world() -> dict:
     from src.core.world_instance import key_mapping_system
     from src.core.world_instance import touch_queue_system
     from src.core.world_instance import serial_system
+    from src.core.world_instance import physical_input_system
     key_mapping_system.register()
     touch_queue_system.register()
     serial_system.register()
+    physical_input_system.register()
 
     return {
         "middleware_entity": _middleware_entity,

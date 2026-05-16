@@ -13,11 +13,11 @@ import time
 
 @dataclass
 class TouchInput:
-    base_x: int = 0
-    base_y: int = 0
-    x: int = 0
-    y: int = 0
-    event_type: str = "move"
-    timestamp: float = field(default_factory=time.time)
     key_id: str = ""
-    size: int = 0
+    event_type: str = "move"
+    x: float = 0.0
+    y: float = 0.0
+    base_x: float = 0.0
+    base_y: float = 0.0
+    size: float = 0.0
+    timestamp: float = field(default_factory=time.time)
