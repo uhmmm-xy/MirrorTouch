@@ -17,9 +17,28 @@ from src.utils.logger import log
 _output_queue: queue.Queue | None = None
 # 活跃标志
 _running: bool = False
-# 映射画布尺寸（加载 mapping.json 时赋值）
+# ── 映射画布尺寸（从 DeviceComponent 真实分辨率写入，非 mapping.json）──
 _map_width: int = 0
 _map_height: int = 0
+
+
+def _refresh_screen_size():
+    """从 DeviceComponent 获取真实设备分辨率，写入 _map_width/_map_height
+    若 DeviceComponent 不可用，保持原映射文件中的尺寸不变。
+    """
+    global _map_width, _map_height
+    try:
+        from src.core.world_instance.world_bootstrap import get_device_meta_entity
+        from src.core.world_instance.components.device_component import DeviceComponent
+        ent = get_device_meta_entity()
+        if ent and esper.entity_exists(ent):
+            dc = esper.component_for_entity(ent, DeviceComponent)
+            if dc.base_w > 0 and dc.base_h > 0:
+                _map_width = dc.base_w
+                _map_height = dc.base_h
+                log.info(f"[KMS] 屏幕尺寸从 DeviceComponent 更新: {_map_width}x{_map_height}")
+    except Exception:
+        pass
 
 
 def register():
@@ -136,6 +155,8 @@ def _load_entities():
     # [MIRROR-TOUCH-T2] 存储映射画布尺寸供坐标转换使用
     _map_width = int(data.get("width", 1080))
     _map_height = int(data.get("height", 1920))
+    # 用 DeviceComponent 真实分辨率覆盖（若可用）
+    _refresh_screen_size()
 
     type_to_creator = {
         "click":    _create_button,
@@ -205,21 +226,18 @@ def _destroy_all_entities():
 # ── Eyes Session 生命周期 ──
 
 def _activate_eyes_session():
-    """KMS 启动时自动激活 Eyes 组件，创建 touch session。
+    """KMS 启动时惰性激活 Eyes 组件（只建 session，不发 down。
 
-    从 Esper 查找 widget_type==eyes 的第一个实体，
-    调用 activate() 下发 down 帧，eyes key 从 WidgetConfig 读取。
+    首次 mouse 移动时由 on_move 自动生成 down 帧。
     """
     from src.core.world_instance.components.widget_config import WidgetConfig
-    from src.core.world_instance.handlers.eyes_widget_handler import activate, is_active
+    from src.core.world_instance.handlers.eyes_widget_handler import activate_lazy, is_active
 
     for ent, (wc,) in esper.get_components(WidgetConfig):
         if wc.widget_type == "eyes":
             if not is_active(wc.key_id):
-                ti = activate(wc.key_id, wc.pos_x, wc.pos_y, wc.scale_size)
-                if _output_queue and ti:
-                    _output_queue.put(ti)
-                    log.info(f"[KMS] Eyes 已激活: key={wc.key_id}")
+                activate_lazy(wc.key_id, wc.pos_x, wc.pos_y, wc.scale_size)
+                log.info(f"[KMS] Eyes 惰性激活: key={wc.key_id}")
             return
     log.warning("[KMS] 未找到 Eyes 实体，跳过激活")
 

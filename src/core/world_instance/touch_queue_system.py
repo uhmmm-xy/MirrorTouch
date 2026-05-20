@@ -18,6 +18,7 @@ import queue
 import threading
 from collections import deque
 from src.utils.logger import log
+from src.core.world_instance.components.touch_input import TouchInput
 
 # ── 状态常量 ──
 STATE_UP_PENDING = 3  # up 已入队，等待 SS 消费后释放
@@ -34,6 +35,8 @@ _session_table: dict[str, dict] = {}
 _finger_pool: list[int] = [0, 1, 2, 3, 4, 5]
 # 6 × deque(maxlen=9) 静态帧池, 按 finger_id 索引
 _frame_pool: list[deque] = []
+# 每个 fid 的最后一帧缓存（6×1），初始为 release 空帧，入池时更新
+_last_frame: list[TouchInput] = []
 
 
 def register():
@@ -44,7 +47,7 @@ def register():
 def _on_start(in_q: queue.Queue):
     """接收 KMS 输出队列，初始化帧池，启动消费线程"""
     global _running, _thread, _input_queue
-    global _session_table, _finger_pool, _frame_pool
+    global _session_table, _finger_pool, _frame_pool, _last_frame
 
     _input_queue = in_q
 
@@ -54,6 +57,8 @@ def _on_start(in_q: queue.Queue):
 
     # 静态预分配 6 个 deque(maxlen=9)
     _frame_pool = [deque(maxlen=9) for _ in range(6)]
+    # 每 fid 最后一帧缓存，初始 release(0,0)
+    _last_frame = [TouchInput(x=0, y=0, event_type="up") for _ in range(6)]
 
     _running = True
     _thread = threading.Thread(target=_run, daemon=True, name="TouchQueueSystem")
@@ -81,31 +86,32 @@ def _on_stop():
     log.info("[TouchQueue] 线程停止, 状态已清空")
 
 
-def mark_consumed(key_id: str, event_type: str):
-    """SerialSystem 回调：标记 down/up 已被消费
-
-    up 消费后且 up_pending==True → session 释放
-    """
-    session = _session_table.get(key_id)
-    if session is None:
-        return
-
-    if event_type == "up" and session.get("up_pending"):
-        _release_session(key_id)
+def mark_consumed_fid(fid: int):
+    """SerialSystem 回调：某个 fid 的 up 帧已被消费 → 释放对应的 session"""
+    for key_id, session in list(_session_table.items()):
+        if session.get("fid") == fid:
+            if session.get("up_pending"):
+                _release_session(key_id)
+            return
+    # session_table 里没有匹配的 fid → 旧 fid 直接回池
+    if 0 <= fid <= 5 and fid not in _finger_pool:
+        _finger_pool.append(fid)
+        _finger_pool.sort()
+        log.info(f"[TouchQueue] fid直接回池: fid={fid} pool={_finger_pool}")
 
 
 def _release_session(key_id: str):
-    """释放 session：fid 回池，删除 session 记录"""
+    """释放 session：fid 回池（去重），删除 session 记录"""
     session = _session_table.pop(key_id, None)
     if session is None:
         return
     fid = session.get("fid", -1)
-    if 0 <= fid <= 5:
+    if 0 <= fid <= 5 and fid not in _finger_pool:
         _finger_pool.append(fid)
         _finger_pool.sort()
         # 清空对应帧窗口
         _frame_pool[fid].clear()
-    log.info(f"[TouchQueue] session 释放: key={key_id} fid={fid}")
+    log.info(f"[TouchQueue] session 释放: key={key_id} fid={fid} pool={_finger_pool}")
 
 
 def _run():
@@ -133,3 +139,14 @@ def _emergency_stop(reason: str = ""):
         dq.clear()
     log.info(f"[TouchQueue] 紧急停机: {reason}")
     esper.dispatch_event("touch.error", f"TouchQueueSystem: {reason}")
+
+
+def maintain_press_state(fid: int):
+    """SS 取帧后调用：若 deque 空 → 用 _last_frame[fid] 补帧"""
+    if fid < 0 or fid >= len(_frame_pool):
+        return
+    dq = _frame_pool[fid]
+    if dq:
+        return
+    if 0 <= fid < len(_last_frame):
+        dq.append(_last_frame[fid])

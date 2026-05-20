@@ -46,9 +46,6 @@ def _on_start(port: str, baudrate: int, frequency: int):
     _ser = handle_connect(port, baudrate)
     _running = True
 
-    # [MIRROR-TOUCH-T3] 串口连接成功后自动下发 Opcode 0 初始化包
-    _send_init_packet()
-
     _thread = threading.Thread(
         target=_run, args=(frequency,), daemon=True, name="SerialSystem"
     )
@@ -91,110 +88,44 @@ def _run(frequency: int):
 
 
 def _consume_all_pools():
-    """遍历 6 个 _frame_pool，全量取帧消费"""
-    import src.core.world_instance.touch_queue_system as tqs
-    from src.core.world_instance.handlers.queue_pop_handler import pop_all
+    """每周期构建全量6指包 → 串口写入"""
+    _build_full_frame()
 
+
+def _build_full_frame():
+    """遍历 6 个 _frame_pool，每指取 1 帧 → 拼全量包 → 写串口"""
+    from src.core.world_instance.handlers.protocol_pack_handler import pack_full_frame, STATUS_PRESS, STATUS_RELEASE
+    import src.core.world_instance.touch_queue_system as tqs
+
+    fingers = []
     for fid in range(6):
         dq = tqs._frame_pool[fid]
-        frames = pop_all(dq)
-        if not frames:
-            continue
-        for ti in frames:
-            if ti.event_type in ("down", "up"):
-                _process_control(ti)
-            else:
-                _process_move(ti)
+        if dq:
+            ti = dq.popleft()
+            status = STATUS_RELEASE if ti.event_type == "up" else STATUS_PRESS
+            fx, fy = _rotate_ratio(ti.x, ti.y)
+            nx = int(min(max(fx, 0.0), 1.0) * 32767)
+            ny = int(min(max(fy, 0.0), 1.0) * 32767)
+            fingers.append({"fid": fid, "status": status, "x": nx, "y": ny})
+            # # 消费后记录到 _last_frame（供 TQS 补帧）
+            tqs._last_frame[fid] = ti
+            if ti.event_type == "up":
+                _mark_tqs_fid(fid)
+            _debug_emit(fid, ti.event_type, fx, fy)
+        else:
+            fingers.append({"fid": fid, "status": STATUS_RELEASE, "x": 0, "y": 0})
 
-
-def _process_move(ti):
-    """处理单帧 move"""
-    from src.core.world_instance.handlers.safety_verify_handler import is_ok
-    from src.core.world_instance.handlers.protocol_pack_handler import pack_move
-    if not is_ok(_ser):
-        return
-    fid = _get_fid(ti.key_id)
-    if fid < 0 or fid > 5:
-        return
-    fx, fy = _rotate_ratio(ti.x, ti.y)
-    _serial_write(pack_move(fid, fx, fy))
-    _debug_emit(fid, "move", fx, fy)
+    data = pack_full_frame(fingers)
+    _serial_write(data)
+    # TQS 维持 press 状态：SS 取帧后若 deque 空 → 复制 press 帧回 deque
+    import src.core.world_instance.touch_queue_system as _tqs
+    for fid in range(6):
+        _tqs.maintain_press_state(fid)
 
 
 def _drain_remaining():
-    """排空所有 _frame_pool 残帧"""
-    import src.core.world_instance.touch_queue_system as tqs
-    for fid in range(6):
-        dq = tqs._frame_pool[fid]
-        if not dq:
-            continue
-        frames = list(dq)
-        dq.clear()
-        for ti in frames:
-            if ti.event_type in ("down", "up"):
-                _process_control(ti)
-            else:
-                fx, fy = _rotate_ratio(ti.x, ti.y)
-                from src.core.world_instance.handlers.safety_verify_handler import is_ok
-                from src.core.world_instance.handlers.protocol_pack_handler import pack_move
-                if is_ok(_ser):
-                    _serial_write(pack_move(fid, fx, fy))
-
-
-def _process_control(item):
-    """处理控制帧 down/up"""
-    from src.core.world_instance.handlers.safety_verify_handler import is_ok
-    from src.core.world_instance.handlers.protocol_pack_handler import pack_down, pack_up
-
-    if not is_ok(_ser):
-        return
-
-    if item.event_type == "down":
-        fx, fy = _rotate_ratio(item.x, item.y)
-        _serial_write(pack_down(_get_fid(item.key_id), fx, fy))
-        _mark_tqs(item.key_id, "down")
-        _debug_emit(_get_fid(item.key_id), "down", fx, fy)
-        log.info(f"[Serial] down: key={item.key_id} fid={_get_fid(item.key_id)} r=({fx:.4f},{fy:.4f})")
-
-    elif item.event_type == "up":
-        _serial_write(pack_up(_get_fid(item.key_id)))
-        _mark_tqs(item.key_id, "up")
-        _debug_emit(_get_fid(item.key_id), "up", 0, 0)
-        # time.sleep(0.05)
-        log.info(f"[Serial] up: key={item.key_id} fid={_get_fid(item.key_id)}")
-
-
-# ── 拟人化 ──
-
-def _hum_offset(x: int, y: int) -> tuple:
-    from src.core.world_instance.handlers.humanize_click_handler import offset_click
-    return offset_click(x, y)
-
-
-def _hum_smooth(fid: int, x: int, y: int) -> tuple:
-    from src.core.world_instance.handlers.humanize_move_handler import smooth_weighted
-    return smooth_weighted(fid, x, y)
-
-
-# ── 边界校验 ──
-
-def _boundary_check(base_x: float, base_y: float, x: float, y: float, size: float) -> tuple[float, float]:
-    """比例空间边界校验：
-    1) 欧氏距离 > size → 投影至圆边缘
-    2) 钳制至 [0, 1]
-    """
-    if size <= 0:
-        size = 0.02
-    dx = x - base_x
-    dy = y - base_y
-    dist = math.sqrt(dx * dx + dy * dy)
-    if dist > size and dist > 0:
-        ratio = size / dist
-        x = base_x + dx * ratio
-        y = base_y + dy * ratio
-    x = max(0.0, min(1.0, x))
-    y = max(0.0, min(1.0, y))
-    return x, y
+    """排空所有 _frame_pool 残帧，全量包发送"""
+    _build_full_frame()
 
 
 # ── 辅助 ──
@@ -205,10 +136,9 @@ def _get_fid(key_id: str) -> int:
     return session.get("fid", -1)
 
 
-def _mark_tqs(key_id: str, event_type: str):
+def _mark_tqs_fid(fid: int):
     import src.core.world_instance.touch_queue_system as tqs
-    if event_type == "up":
-        tqs.mark_consumed(key_id, event_type)
+    tqs.mark_consumed_fid(fid)
 
 
 # ── 调试回传 ──
@@ -241,35 +171,6 @@ def _emergency_stop(reason: str = ""):
         handle_disconnect(_ser)
     log.info(f"[Serial] 紧急停机: {reason}")
     esper.dispatch_event("touch.error", f"SerialSystem: {reason}")
-
-
-# ── [MIRROR-TOUCH-T3] Opcode 0 初始化下发 ──
-
-def _send_init_packet():
-    """串口连接成功后，从 DeviceComponent 读取 base_w/base_h，发送 Opcode 0 初始化包。
-
-    仅 is_ready==True 时发送；通过 esper 读取，不依赖 UI 或全局变量。
-    """
-    try:
-        from src.core.world_instance.handlers.protocol_pack_handler import pack_set_size
-        from src.core.world_instance.world_bootstrap import get_device_meta_entity
-        from src.core.world_instance.components.device_component import DeviceComponent
-
-        ent = get_device_meta_entity()
-        if ent == 0 or not esper.entity_exists(ent):
-            log.warning("[Serial] DeviceComponent 实体不存在，跳过 SET_SIZE")
-            return
-        dc = esper.component_for_entity(ent, DeviceComponent)
-        if not dc.is_ready:
-            log.warning("[Serial] DeviceComponent 未就绪，跳过 SET_SIZE")
-            return
-
-        w, h = dc.base_w, dc.base_h
-        data = pack_set_size()
-        _serial_write(data)
-        log.info("[Serial] SET_SIZE 初始化包已发送: 32767×32767")
-    except Exception as e:
-        log.warning(f"[Serial] SET_SIZE 发送失败: {e}")
 
 
 # ── [MIRROR-TOUCH-T2] 比例旋转（在打包前统一应用）──

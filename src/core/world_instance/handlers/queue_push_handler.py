@@ -5,7 +5,7 @@
   分流规则（统一入 _frame_pool，deque FIFO 天然保序）:
     down → 查 _session_table:
            无 → 分配 fid → 入 _frame_pool[fid]
-           有 → 双down补偿: 虚拟up入池 → 新down入池（同一fid）
+           有 → 新 down 入池（同一 fid）
     move → 查表 → 有session? 入 _frame_pool[fid] : 丢弃
            deque 满 9 帧时淘汰最旧 move（不淘汰 down/up）
     up   → 查表 → 标记 up_pending → 入 _frame_pool[fid]
@@ -42,27 +42,49 @@ def _handle_down(ti: TouchInput, session_table: dict, frame_pool: list[deque],
     key_id = ti.key_id
     session = session_table.get(key_id)
 
+    # ── 新 session ──
     if session is None:
         if not finger_pool:
-            log.error(f"[QueuePush] finger_pool 耗尽, down 拒绝: {key_id}")
+            # pool 空 → 淘汰最后入栈的 session → 释放旧 up 帧 → 复用其 fid
+            if not session_table:
+                log.error(f"[QueuePush] finger_pool 耗尽且无 session 可淘汰, down 拒绝: {key_id}")
+                return
+            old_key = next(reversed(session_table))
+            old_fid = session_table[old_key]["fid"]
+            up_ti = TouchInput(event_type="up", key_id=old_key)
+            frame_pool[old_fid].append(up_ti)
+            del session_table[old_key]
+            log.warning(f"[QueuePush] pool空, 淘汰+释放: key={old_key} fid={old_fid}")
+            session_table[key_id] = {"fid": old_fid, "up_pending": False}
+            frame_pool[old_fid].append(ti)
+            log.info(f"[QueuePush] session 创建(pool空,复用): key={key_id} fid={old_fid}")
             return
         fid = finger_pool.pop(0)
         session_table[key_id] = {"fid": fid, "up_pending": False}
         frame_pool[fid].append(ti)
         log.info(f"[QueuePush] session 创建: key={key_id} fid={fid}")
-    else:
-        # 双 down 补偿：构虚拟 up → 入池 → 新 down 入池（保持同一 fid，不释放）
-        log.warning(f"[QueuePush] 双down补偿: key={key_id}")
-        fid = session["fid"]
-        virt_up = TouchInput(
-            base_x=ti.base_x, base_y=ti.base_y,
-            x=0, y=0,
-            event_type="up", key_id=key_id,
-            size=ti.size,
-        )
-        frame_pool[fid].append(virt_up)
-        session["up_pending"] = False
-        frame_pool[fid].append(ti)
+        return
+
+    # ── 边界跳转 ──
+    if session.get("up_pending"):
+        old_fid = session["fid"]
+        new_fid = None
+        for f in finger_pool:
+            if f != old_fid:
+                new_fid = f
+                break
+        if new_fid is not None:
+            finger_pool.remove(new_fid)
+        else:
+            new_fid = old_fid
+            log.warning(f"[QueuePush] session 跳转不存在新fid 复用: key={key_id} fid={old_fid}")
+        session_table[key_id] = {"fid": new_fid, "up_pending": False}
+        frame_pool[new_fid].append(ti)
+        log.info(f"[QueuePush] session 跳转: key={key_id} fid={old_fid}→{new_fid} pool={finger_pool}")
+        return
+
+    # ── 重复 down：静默丢弃 ──
+    log.warning(f"[QueuePush] 重复down丢弃: key={key_id}")
 
 
 def _handle_move(ti: TouchInput, session_table: dict, frame_pool: list[deque]):

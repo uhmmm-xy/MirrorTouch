@@ -247,25 +247,15 @@ class MirrorPage(QWidget):
         self.btn_stop.setEnabled(False)
 
     def _lock_mouse(self):
-        """锁定鼠标：隐藏光标 + setPos 回中心（setPos 触发的事件通过 _resetting_mouse 标记过滤）"""
+        """锁定鼠标：隐藏光标，记录中心位置"""
         from PyQt5.QtGui import QCursor
         self._lock_ctr = self.mapToGlobal(self.rect().center())
         self.setCursor(Qt.BlankCursor)
-        self._resetting_mouse = False
-        self._lock_timer = QTimer(self)
-        self._lock_timer.timeout.connect(self._reset_cursor)
-        self._lock_timer.start(5)
-
-    def _reset_cursor(self):
-        """重置光标到中心——设置 _resetting_mouse 标记让 mouseMoveEvent 跳过虚假事件"""
-        from PyQt5.QtGui import QCursor
-        self._resetting_mouse = True
-        QCursor.setPos(self._lock_ctr)
+        # self._resetting_mouse = False
+        # self._last_cursor = QCursor.pos()
 
     def _unlock_mouse(self):
         self.setCursor(Qt.ArrowCursor)
-        if hasattr(self, '_lock_timer'):
-            self._lock_timer.stop()
 
     def event(self, e):
         if e.type() == e.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab):
@@ -304,21 +294,22 @@ class MirrorPage(QWidget):
         from PyQt5.QtGui import QCursor
         if not self._touch_active:
             return
-        if getattr(self, '_resetting_mouse', False):
-            self._resetting_mouse = False
-            if hasattr(self, '_last_cursor'):
-                self._last_cursor = QCursor.pos()
-            return
+        # if getattr(self, '_resetting_mouse', False):
+        #     self._resetting_mouse = False
+        #     log.error("[MirrorPage] 跳过虚假 mouseMoveEvent")
+            # if hasattr(self, '_last_cursor'):
+            #     self._last_cursor = QCursor.pos()
+            # return
         cur = QCursor.pos()
-        if not hasattr(self, '_last_cursor') or self._last_cursor is None:
-            self._last_cursor = cur
-            return
-        dpix = cur.x() - self._last_cursor.x()
-        dpiy = cur.y() - self._last_cursor.y()
-        self._last_cursor = cur
+        # if not hasattr(self, '_last_cursor') or self._last_cursor is None:
+        #     self._last_cursor = cur
+        #     return
+        dpix = cur.x() - self._lock_ctr.x()
+        dpiy = cur.y() - self._lock_ctr.y()
+        
         if dpix == 0 and dpiy == 0:
             return
-
+        
         # 从 VideoView 获取视频帧渲染尺寸做比例换算基准
         dst_w = self.dc_w #getattr(self.video_view, '_dst_w', 0)
         dst_h = self.dc_h #getattr(self.video_view, '_dst_h', 0)
@@ -328,6 +319,10 @@ class MirrorPage(QWidget):
             dst_h = self.height()
         dx = dpix / max(1, dst_w)
         dy = dpiy / max(1, dst_h)
+        # ── 同步拉回 ──
+        # self._resetting_mouse = True
+        QCursor.setPos(self._lock_ctr)
+        # self._last_cursor = QCursor.pos()
         _dispatch_touch(self._eyes_key, "move", dx, dy)
 
     # ── 帧渲染 ──
